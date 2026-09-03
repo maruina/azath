@@ -1,0 +1,39 @@
+# azath server configuration for VPS deployment.
+# See docs/runbooks/deploy-lan-vps.md for the full deployment guide.
+#
+# The master key file and devices[] list must be identical to the LAN server.
+# The only intentional differences from server-lan.yaml are server.name and
+# the Telegram bot token ref.
+
+server:
+  name: vps                         # different name from LAN for Telegram prompts
+  listen: "127.0.0.1:7800"          # loopback only; Caddy terminates TLS
+  metrics_listen: "127.0.0.1:9090"  # loopback only
+  log_level: info
+  log_format: json
+  seal_token_ref: "op://<vault>/azath/seal-token"
+
+master_key:
+  source: file
+  path: /etc/azath/master.key       # must be identical to LAN master key
+
+registry:
+  path: /etc/azath/registry.json
+
+devices:
+  - name: synology
+    uuid: 550e8400-e29b-41d4-a716-446655440000
+    disabled: false
+
+notifications:
+  telegram:
+    bot_token_ref: "op://<vault>/azath-vps-bot/token"  # separate from LAN
+    chat_id: "123456789"
+    rate_limit: 5m
+    approval_ttl: 10m
+
+gate:
+  type: telegram
+  telegram:
+    authorized_user_id: "987654321"
+    approval_cache_ttl: 2m          # 0 disables cache; default 2m

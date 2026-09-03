@@ -1,0 +1,79 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    # Correctness
+    - errcheck        # unchecked errors
+    - govet           # go vet checks
+    - staticcheck     # static analysis (includes unused, SA, S, ST checks)
+    - ineffassign     # assignments with no effect
+
+    # Security
+    - gosec           # security issues (hardcoded creds, weak crypto, injection)
+    - noctx           # HTTP requests without context
+    - bodyclose       # HTTP response body not closed
+
+    # Code quality
+    - gocritic        # opinionated checks
+    - misspell        # spelling errors
+
+    # Error handling
+    - wrapcheck       # errors should be wrapped when crossing package boundaries
+    - errorlint       # correct error wrapping with %w
+
+  settings:
+    gosec:
+      severity: medium
+      confidence: medium
+      # G304 (file inclusion via variable) is excluded only for key/config/cert
+      # file reads — scoped via path rules in exclusions below, not globally.
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment  # struct field alignment — micro-optimization, not critical
+
+    staticcheck:
+      checks:
+        - all
+        - "-ST1000"  # package comment — not required on every package
+        - "-ST1003"  # naming — too strict for some proto-generated names
+
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+
+    wrapcheck:
+      ignore-package-globs:
+        - github.com/maruina/azath/internal/*  # internal sub-packages don't need wrapping
+        - google.golang.org/grpc/status         # gRPC status errors must be returned unwrapped
+
+  exclusions:
+    rules:
+      # Test files: relax wrapcheck (test helpers wrap differently)
+      # Keep gosec enabled for test files — crypto fixtures must still be scanned.
+      - path: "_test\\.go"
+        linters:
+          - wrapcheck
+
+      # Scope G304 (file inclusion via variable) to key/config/cert read paths only.
+      # Do NOT add a blanket G304 exclusion — other file reads must be flagged.
+      - path: "internal/keymanager"
+        linters:
+          - gosec
+        text: "G304"
+      - path: "internal/config"
+        linters:
+          - gosec
+        text: "G304"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 5

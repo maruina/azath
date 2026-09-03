@@ -1,0 +1,12 @@
+# azath client configuration for Synology NAS.
+# See docs/runbooks/synology.md for the full Synology deployment guide.
+#
+# The client tries endpoints in order and falls back if the first is unavailable.
+
+device:
+  name: synology
+  uuid: 550e8400-e29b-41d4-a716-446655440000
+
+endpoints:
+  - https://azath-vps.example.com:443
+  - https://azath-lan.example.internal:443

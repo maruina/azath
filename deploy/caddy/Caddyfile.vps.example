@@ -1,0 +1,15 @@
+# VPS Caddyfile example
+#
+# Caddy natively supports h2c reverse-proxying with the h2c:// scheme.
+# No extra module is needed.
+#
+# This hostname must resolve to the VPS public IP for Let's Encrypt HTTP-01
+# challenge. If the host is not reachable from the internet, uncomment the
+# tls internal line below to use Caddy's local CA instead.
+
+azath-vps.example {
+	reverse_proxy h2c://127.0.0.1:7800
+
+	# Fallback: use Caddy's internal CA for private DNS.
+	# tls internal
+}

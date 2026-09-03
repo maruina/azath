@@ -1,0 +1,16 @@
+# LAN Caddyfile example
+#
+# Caddy natively supports h2c reverse-proxying with the h2c:// scheme.
+# No extra module is needed.
+#
+# A LAN-only host is usually not reachable from the internet, so Let's Encrypt
+# HTTP-01 fails. Default to Caddy's internal CA and trust its root CA on the
+# Synology (DSM Control Panel > Security > Certificate) so azath client can
+# verify TLS. For a real public cert, switch to DNS-01 via Cloudflare and the
+# caddy-dns/cloudflare plugin.
+
+azath-lan.example {
+	reverse_proxy h2c://127.0.0.1:7800
+
+	tls internal
+}

@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.26.5"
+          cache: true
+      - name: go mod verify
+        run: go mod verify
+      - name: go vet
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.12.2
+          args: --timeout=5m
+      - name: Test
+        run: go test ./... -v -count=1
+      - name: Build
+        run: |
+          mkdir -p bin
+          go build -ldflags "-X main.version=${GITHUB_REF_NAME:-dev} -X main.commit=${GITHUB_SHA:-none}" -o bin/azath ./cmd/azath
+
+  installer:
+    name: Installer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.26.5"
+          cache: true
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install --yes shellcheck
+      - name: Validate shell scripts
+        run: |
+          sh -n deploy/scripts/install.sh deploy/scripts/install_test.sh
+          shellcheck --shell=sh deploy/scripts/install.sh deploy/scripts/install_test.sh
+      - name: Test installer with Dash
+        run: docker run --rm -e AZATH_INSTALL_TEST_CONTAINER=1 -v "$PWD:/src:ro" -w /src debian:13-slim dash deploy/scripts/install_test.sh
+      - name: Test installer with BusyBox
+        run: docker run --rm -e AZATH_INSTALL_TEST_CONTAINER=1 -v "$PWD:/src:ro" -w /src busybox:1.37 sh deploy/scripts/install_test.sh
+      - name: Validate GoReleaser configuration
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
+        with:
+          version: latest
+          args: check
+      - name: Build snapshot and verify release assets
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
+        with:
+          version: latest
+          args: release --snapshot --clean
+      - name: Assert snapshot archive contract
+        run: |
+          expected=$(printf '%s\n' azath deploy/systemd/azath.service)
+          for archive in dist/azath_linux_amd64.tar.gz dist/azath_linux_arm64.tar.gz; do
+            test -f "$archive"
+            test "$(tar -tzf "$archive" | sort)" = "$expected"
+          done
+          test "$(awk '{print $2}' dist/checksums.txt | sort)" = "$(printf '%s\n' azath_linux_amd64.tar.gz azath_linux_arm64.tar.gz)"

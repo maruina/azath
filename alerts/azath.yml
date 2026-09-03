@@ -1,0 +1,66 @@
+groups:
+  - name: azath
+    rules:
+      - alert: AzathMasterKeyNotLoaded
+        expr: azath_master_key_loaded == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Master key not loaded
+          description: >
+            azath master key has not been loaded for more than 1 minute.
+            This fires at runtime when the key is absent (key file removed
+            or unreadable, source unreachable after restart). Normal startup loads the key
+            within the 60s deadline, so this should not fire on a healthy
+            restart. Verify the process is still running (up == 1) and check
+            azath logs for the key source error.
+
+      - alert: AzathUnsealFailureRateHigh
+        expr: sum(rate(azath_unseal_total{reason!="ok"}[5m])) / sum(rate(azath_unseal_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High unseal failure rate
+          description: More than 10% of unseal requests are failing.
+
+      - alert: AzathNotificationFailure
+        expr: increase(azath_notification_failures_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: Notification failure
+          description: azath has failed to send one or more notifications.
+
+      - alert: AzathGateAPIError
+        expr: increase(azath_gate_api_errors_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: Gate API error
+          description: azath gate is experiencing external API errors.
+
+      - alert: AzathRegistryLoadError
+        expr: increase(azath_registry_load_errors_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: Registry load error
+          description: azath failed to load or verify the device registry.
+
+      - alert: AzathUnsealRateSpike
+        expr: sum(rate(azath_unseal_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Unseal rate spike
+          description: >
+            Sustained unseal rate exceeds 1 request/second. Normal homelab
+            traffic is 1-2 unseals per node restart. A sustained spike may
+            indicate a node stuck in a retry loop or a brute-force attempt
+            against the gRPC endpoint.

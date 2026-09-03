@@ -1,0 +1,55 @@
+name: Renovate
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 * * * *"
+  push:
+    branches:
+      - main
+    paths:
+      - "renovate.json"
+      - "renovate.js"
+      - ".github/workflows/renovate.yml"
+
+env:
+  RENOVATE_VERSION: 43.263.9
+  NODE_VERSION: "24.18.0"
+
+permissions:
+  contents: read
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Install Renovate
+        run: |
+          for i in 1 2 3; do
+            npm install -g renovate@${{ env.RENOVATE_VERSION }} && exit 0
+            echo "Attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+          exit 1
+
+      - name: Run Renovate
+        run: renovate --token ${{ secrets.RENOVATE_TOKEN }} ${{ github.repository }}
+        env:
+          RENOVATE_CONFIG_FILE: ${{ github.workspace }}/renovate.js
+          LOG_LEVEL: ${{ github.event_name == 'workflow_dispatch' && 'debug' || 'info' }}
+          NODE_OPTIONS: "--max-old-space-size=4096"
+          GOTOOLCHAIN: auto

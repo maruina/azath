@@ -1,0 +1,25 @@
+[Unit]
+Description=azath KMS server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=azath
+Group=azath
+ExecStart=/usr/local/bin/azath serve --config /etc/azath/server.yaml
+Restart=on-failure
+RestartSec=5s
+EnvironmentFile=/etc/azath/onepassword.env
+
+# Required for mlockall to prevent master key from being swapped to disk.
+LimitMEMLOCK=infinity
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/etc/azath
+
+[Install]
+WantedBy=multi-user.target

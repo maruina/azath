@@ -1,0 +1,62 @@
+version: 2
+
+project_name: azath
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: ./cmd/azath
+    binary: azath
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - deploy/systemd/azath.service
+
+release:
+  extra_files:
+    - glob: deploy/scripts/install.sh
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  use: github
+  sort: asc
+  format: "{{ .Message }}"
+  groups:
+    - title: "Features"
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: "Bug fixes"
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: "Other changes"
+      order: 999
+  filters:
+    exclude:
+      - "^Merge pull request"
+      - "^Merge branch"
+      - "^Merge tag"
+      - '^chore\(deps\):'
+      - "^ci:"
+      - "^style:"
+      - "^test:"
+      - "Initial commit"
+      - "Remove references to private repo"

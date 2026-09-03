@@ -1,0 +1,52 @@
+name: Release
+
+# Tag-driven release: push a tag starting with "v" and goreleaser builds the
+# artifacts and publishes the GitHub release. No manual goreleaser invocation
+# needed.
+#
+#   git tag v0.1.0
+#   git push origin v0.1.0
+#
+# Release uses a GitHub-hosted runner on purpose: tag pushes are deliberate and
+# infrequent, and the release job should not depend on self-hosted runner
+# availability.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.26.5"
+          cache: true
+      - name: go mod verify
+        run: go mod verify
+      - name: Run goreleaser
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Assert published installer assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          expected=$(printf '%s\n' install.sh checksums.txt azath_linux_amd64.tar.gz azath_linux_arm64.tar.gz | sort)
+          actual=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)
+          if [ "$actual" != "$expected" ]; then
+            printf 'unexpected release assets:\n%s\n' "$actual" >&2
+            printf 'expected release assets:\n%s\n' "$expected" >&2
+            exit 1
+          fi
