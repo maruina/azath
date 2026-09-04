@@ -13,7 +13,7 @@ on:
       - ".github/workflows/renovate.yml"
 
 env:
-  RENOVATE_VERSION: 43.263.9
+  RENOVATE_VERSION: 43.288.0
   NODE_VERSION: "24.18.0"
 
 permissions:
