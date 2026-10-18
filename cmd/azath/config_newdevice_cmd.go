@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 func newConfigNewDeviceCmd() *cobra.Command {
 	var name, cfgPath string
+	var jsonOutput bool
 
 	cmd := &cobra.Command{
 		Use:   "new-device",
@@ -48,6 +50,16 @@ Comments and formatting in the config file are preserved.`,
 				return fmt.Errorf("writing config: %w", err)
 			}
 
+			if jsonOutput {
+				if jsonErr := json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+					"name": name,
+					"uuid": id,
+				}); jsonErr != nil {
+					return fmt.Errorf("writing json output: %w", jsonErr)
+				}
+				return nil
+			}
+
 			if _, err = fmt.Fprintln(cmd.OutOrStdout(), id); err != nil {
 				return fmt.Errorf("writing output: %w", err)
 			}
@@ -57,6 +69,7 @@ Comments and formatting in the config file are preserved.`,
 
 	cmd.Flags().StringVar(&name, "name", "", "device name (required)")
 	cmd.Flags().StringVar(&cfgPath, "config", "", "path to config file (required)")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output result in JSON format")
 	_ = cmd.MarkFlagRequired("name")
 	_ = cmd.MarkFlagRequired("config")
 

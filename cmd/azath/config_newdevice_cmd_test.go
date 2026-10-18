@@ -223,9 +223,21 @@ func TestConfigNewDevice_FileNotFound(t *testing.T) {
 	}
 }
 
+func TestConfigNewDevice_JSON(t *testing.T) {
+	t.Parallel()
+	path := testutil.WriteConfig(t, validConfigYAML)
+	out, err := runCmd(t, "config", "new-device", "--name", "json-node", "--config", path, "--json")
+	if err != nil {
+		t.Fatalf("runCmd failed: %v", err)
+	}
+	if !strings.Contains(out, `"name":"json-node"`) || !strings.Contains(out, `"uuid":`) {
+		t.Errorf("unexpected json output: %s", out)
+	}
+}
+
 func TestConfigNewDevice_InvalidExistingConfig(t *testing.T) {
 	t.Parallel()
-	// Valid YAML but missing seal_token_ref and gate — fails Validate.
+	// Valid YAML but missing gate — fails Validate.
 	invalid := `
 server:
   listen: "127.0.0.1:7800"

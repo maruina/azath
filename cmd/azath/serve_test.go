@@ -92,7 +92,7 @@ func TestServeCmd_MissingConfigFile(t *testing.T) {
 
 func TestServeCmd_InvalidConfig(t *testing.T) {
 	t.Parallel()
-	// Missing seal_token_ref — Validate should fail.
+	// Missing gate — Validate should fail.
 	invalid := `
 server:
   listen: "127.0.0.1:0"
@@ -119,35 +119,12 @@ func TestServeCmd_MissingKeyFile(t *testing.T) {
 	keyPath := filepath.Join(dir, "nonexistent.key")
 	cfgPath := writeDevConfig(t, keyPath, "127.0.0.1:0", "127.0.0.1:0")
 
-	t.Setenv("AZATH_SEAL_TOKEN", "test-seal-token")
-
 	err := runServe(t.Context(), cfgPath, true, "")
 	if err == nil {
 		t.Fatal("expected error for missing key file, got nil")
 	}
 	if !strings.Contains(err.Error(), "loading master key") {
 		t.Errorf("err = %q, want substring %q", err.Error(), "loading master key")
-	}
-}
-
-func TestServeCmd_MissingSealTokenEnvVar(t *testing.T) {
-	// t.Setenv cannot be combined with t.Parallel.
-	dir := t.TempDir()
-	keyPath := filepath.Join(dir, "master.key")
-
-	testutil.WriteKeyFile(t, keyPath)
-
-	cfgPath := writeDevConfig(t, keyPath, "127.0.0.1:0", "127.0.0.1:0")
-
-	// Ensure AZATH_SEAL_TOKEN is not set.
-	t.Setenv("AZATH_SEAL_TOKEN", "")
-
-	err := runServe(t.Context(), cfgPath, true, "")
-	if err == nil {
-		t.Fatal("expected error for missing seal token env var, got nil")
-	}
-	if !strings.Contains(err.Error(), "resolving seal token") {
-		t.Errorf("err = %q, want substring %q", err.Error(), "resolving seal token")
 	}
 }
 
@@ -174,7 +151,6 @@ func TestServeCmd_DevModeBootAndShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Setenv("AZATH_SEAL_TOKEN", "test-seal-token-value")
 	t.Setenv("AZATH_BOT_TOKEN", "fake-bot-token-for-testing")
 
 	ctx, cancel := context.WithCancel(t.Context())

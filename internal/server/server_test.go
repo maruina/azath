@@ -16,7 +16,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
@@ -81,8 +80,6 @@ func newUnloadedManager(t *testing.T, m *observability.Metrics) *keymanager.Mana
 	return keymanager.New(m, nil)
 }
 
-const testSealToken = "super-secret-seal-token"
-
 // newTestServerAndClient creates a KMSServer with the given options plus defaults,
 // registers it on a bufconn listener, and returns a connected KMSServiceClient.
 // The server is cleaned up on t.Cleanup.
@@ -92,9 +89,7 @@ const testSealToken = "super-secret-seal-token"
 func newTestServerAndClient(t *testing.T, km *keymanager.Manager, m *observability.Metrics, opts ...server.Option) (*server.KMSServer, kms.KMSServiceClient) {
 	t.Helper()
 
-	allOpts := append([]server.Option{server.WithSealToken([]byte(testSealToken))}, opts...)
-
-	srv := server.New(km, m, allOpts...)
+	srv := server.New(km, m, opts...)
 
 	lis := bufconn.Listen(bufSize)
 	gs := grpc.NewServer()
@@ -127,15 +122,10 @@ func newTestServerAndClient(t *testing.T, km *keymanager.Manager, m *observabili
 	return srv, kms.NewKMSServiceClient(cc)
 }
 
-// ctxWithBearer returns a context carrying the given bearer token.
-func ctxWithBearer(ctx context.Context, token string) context.Context {
-	return metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", "Bearer "+token))
-}
-
 // sealOne is a helper that seals data for the given UUID and returns the sealed blob.
 func sealOne(t *testing.T, ctx context.Context, client kms.KMSServiceClient, nodeUUID string, data []byte) []byte {
 	t.Helper()
-	resp, err := client.Seal(ctxWithBearer(ctx, testSealToken), &kms.Request{
+	resp, err := client.Seal(ctx, &kms.Request{
 		NodeUuid: nodeUUID,
 		Data:     data,
 	})
@@ -166,7 +156,7 @@ func TestSeal(t *testing.T) {
 				devices := map[string]server.DeviceInfo{
 					nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: false},
 				}
-				return ctxWithBearer(t.Context(), testSealToken), &kms.Request{
+				return t.Context(), &kms.Request{
 					NodeUuid: nodeUUID,
 					Data:     plaintext,
 				}, []server.Option{server.WithDevices(devices)}
@@ -175,40 +165,10 @@ func TestSeal(t *testing.T) {
 			wantData: true,
 		},
 		{
-			name: "missing_bearer_token",
-			setup: func(t *testing.T) (context.Context, *kms.Request, []server.Option) {
-				t.Helper()
-				nodeUUID := uuid.New().String()
-				devices := map[string]server.DeviceInfo{
-					nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: false},
-				}
-				return t.Context(), &kms.Request{
-					NodeUuid: nodeUUID,
-					Data:     plaintext,
-				}, []server.Option{server.WithDevices(devices)}
-			},
-			wantCode: codes.Unauthenticated,
-		},
-		{
-			name: "wrong_bearer_token",
-			setup: func(t *testing.T) (context.Context, *kms.Request, []server.Option) {
-				t.Helper()
-				nodeUUID := uuid.New().String()
-				devices := map[string]server.DeviceInfo{
-					nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: false},
-				}
-				return ctxWithBearer(t.Context(), "wrong-token"), &kms.Request{
-					NodeUuid: nodeUUID,
-					Data:     plaintext,
-				}, []server.Option{server.WithDevices(devices)}
-			},
-			wantCode: codes.Unauthenticated,
-		},
-		{
 			name: "invalid_uuid",
 			setup: func(t *testing.T) (context.Context, *kms.Request, []server.Option) {
 				t.Helper()
-				return ctxWithBearer(t.Context(), testSealToken), &kms.Request{
+				return t.Context(), &kms.Request{
 					NodeUuid: "not-a-uuid",
 					Data:     plaintext,
 				}, nil
@@ -220,7 +180,7 @@ func TestSeal(t *testing.T) {
 			setup: func(t *testing.T) (context.Context, *kms.Request, []server.Option) {
 				t.Helper()
 				devices := map[string]server.DeviceInfo{}
-				return ctxWithBearer(t.Context(), testSealToken), &kms.Request{
+				return t.Context(), &kms.Request{
 					NodeUuid: uuid.New().String(),
 					Data:     plaintext,
 				}, []server.Option{server.WithDevices(devices)}
@@ -235,7 +195,7 @@ func TestSeal(t *testing.T) {
 				devices := map[string]server.DeviceInfo{
 					nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: true},
 				}
-				return ctxWithBearer(t.Context(), testSealToken), &kms.Request{
+				return t.Context(), &kms.Request{
 					NodeUuid: nodeUUID,
 					Data:     plaintext,
 				}, []server.Option{server.WithDevices(devices)}
@@ -333,7 +293,7 @@ func TestSeal_MasterKeyNotLoaded(t *testing.T) {
 
 	// Pre-register so the lookup succeeds (though Seal will fail on km.Sealer())
 
-	_, err := client.Seal(ctxWithBearer(t.Context(), testSealToken), &kms.Request{
+	_, err := client.Seal(t.Context(), &kms.Request{
 		NodeUuid: nodeUUID,
 		Data:     bytes.Repeat([]byte{1}, 32),
 	})
@@ -597,7 +557,7 @@ func TestServer_ConcurrentSealUnseal(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			// Inline Seal to avoid t.Fatalf from sealOne, which only exits the goroutine.
-			sealResp, err := client.Seal(ctxWithBearer(ctx, testSealToken), &kms.Request{
+			sealResp, err := client.Seal(ctx, &kms.Request{
 				NodeUuid: nodeUUID,
 				Data:     plaintext,
 			})
@@ -627,29 +587,6 @@ func TestServer_ConcurrentSealUnseal(t *testing.T) {
 
 // --- Close / token zeroing test ---
 
-func TestClose_ZerosSealToken(t *testing.T) {
-	t.Parallel()
-
-	m := newTestMetrics(t)
-	mgr := newLoadedManager(t, testKey(), m)
-	srv := server.New(mgr, m, server.WithSealToken([]byte(testSealToken)))
-
-	// Token should be set before Close.
-	if len(server.SealTokenForTesting(srv)) == 0 {
-		t.Fatal("SealToken is empty before Close")
-	}
-
-	srv.Close()
-
-	// After Close, token must be zeroed.
-	tok := server.SealTokenForTesting(srv)
-	for i, b := range tok {
-		if b != 0 {
-			t.Errorf("sealToken[%d] = %#x after Close, want 0", i, b)
-		}
-	}
-}
-
 // --- Seal with unavailable key ---
 
 func TestSeal_UnloadedMasterKeyFails(t *testing.T) {
@@ -664,46 +601,12 @@ func TestSeal_UnloadedMasterKeyFails(t *testing.T) {
 	}
 	_, client := newTestServerAndClient(t, mgr, m, server.WithDevices(devices))
 
-	_, err := client.Seal(ctxWithBearer(t.Context(), testSealToken), &kms.Request{
+	_, err := client.Seal(t.Context(), &kms.Request{
 		NodeUuid: nodeUUID,
 		Data:     bytes.Repeat([]byte{1}, 32),
 	})
 	if err == nil {
 		t.Fatal("Seal with unloaded key succeeded, want error")
-	}
-}
-
-// --- Auth: empty seal token bypass ---
-
-func TestSeal_EmptyTokenBypassed(t *testing.T) {
-	t.Parallel()
-
-	m := newTestMetrics(t)
-	mgr := newLoadedManager(t, testKey(), m)
-	nodeUUID := uuid.New().String()
-	devices := map[string]server.DeviceInfo{
-		nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: false},
-	}
-
-	// Create server WITHOUT WithSealToken — sealToken is nil/empty.
-	srv := server.New(mgr, m, server.WithDevices(devices))
-	defer srv.Close()
-
-	// Build an incoming context with an empty bearer token.
-	incomingCtx := metadata.NewIncomingContext(
-		t.Context(),
-		metadata.Pairs("authorization", "Bearer "),
-	)
-	resp, err := srv.Seal(incomingCtx, &kms.Request{
-		NodeUuid: nodeUUID,
-		Data:     bytes.Repeat([]byte{1}, 32),
-	})
-	if err == nil {
-		t.Fatalf("Seal with empty sealToken + empty bearer succeeded (resp=%v), want Unauthenticated", resp)
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unauthenticated {
-		t.Errorf("Seal empty token code = %v, want Unauthenticated", st.Code())
 	}
 }
 

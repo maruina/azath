@@ -196,6 +196,34 @@ func TestBlockingCancellation(t *testing.T) {
 	}
 }
 
+func TestLateApprovalAfterClientCancellationCachesApproval(t *testing.T) {
+	t.Parallel()
+	f := newFakeTelegram(t)
+	g := newTestGate(t, f, time.Minute, time.Minute, nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	check := startCheck(t, g, ctx)
+	waitForApprovalMessage(t, f)
+
+	// Client aborts/cancels early before operator responds
+	cancel()
+	awaitDecision(t, check, Denied)
+
+	// Operator later taps Approve on Telegram within approval TTL
+	cb := callback(t, g, f, true)
+	g.processCallback(cb)
+
+	// Client reconnects/retries: should succeed via cached approval
+	retryCtx := t.Context()
+	decision, err := g.Check(retryCtx, Device{Name: "synology", UUID: testUUID})
+	if err != nil {
+		t.Fatalf("unexpected error on retry: %v", err)
+	}
+	if decision != Approved {
+		t.Fatalf("expected retry to be Approved via cache, got %v", decision)
+	}
+}
+
 func TestBlockingTimeoutAndRateLimit(t *testing.T) {
 	t.Parallel()
 	for _, outcome := range []string{"timeout", "deny", "api"} {

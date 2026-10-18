@@ -293,6 +293,25 @@ devices:
 	}
 }
 
+func TestConfigToggleDevice_JSON(t *testing.T) {
+	t.Parallel()
+	path := testutil.WriteConfig(t, validConfigYAML)
+	out, err := runCmd(t, "config", "disable-device", "--name", "talos-node", "--config", path, "--json")
+	if err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if !strings.Contains(out, `"name":"talos-node"`) || !strings.Contains(out, `"disabled":true`) {
+		t.Errorf("unexpected json output: %s", out)
+	}
+	out, err = runCmd(t, "config", "enable-device", "--name", "talos-node", "--config", path, "--json")
+	if err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if !strings.Contains(out, `"name":"talos-node"`) || !strings.Contains(out, `"disabled":false`) {
+		t.Errorf("unexpected json output: %s", out)
+	}
+}
+
 // validateConfigFile loads and validates a config file, then runs check.
 func validateConfigFile(t *testing.T, path string, check func(*config.Config)) {
 	t.Helper()

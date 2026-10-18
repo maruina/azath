@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	kms "github.com/siderolabs/kms-client/api/kms"
-	"google.golang.org/grpc/metadata"
 
 	"github.com/maruina/azath/internal/crypto"
 	"github.com/maruina/azath/internal/gate"
@@ -34,9 +33,8 @@ func TestConfigRenamePreservesExistingBlob(t *testing.T) {
 	id := uuid.NewString()
 	plaintext := []byte("config-only device key")
 	defer crypto.Zero(plaintext)
-	first := server.New(mgr, m, server.WithSealToken([]byte(testSealToken)), server.WithDevices(map[string]server.DeviceInfo{id: {Name: "old-name", UUID: id}}))
-	ctx := metadata.NewIncomingContext(t.Context(), metadata.Pairs("authorization", "Bearer "+testSealToken))
-	sealed, err := first.Seal(ctx, &kms.Request{NodeUuid: id, Data: plaintext})
+	first := server.New(mgr, m, server.WithDevices(map[string]server.DeviceInfo{id: {Name: "old-name", UUID: id}}))
+	sealed, err := first.Seal(t.Context(), &kms.Request{NodeUuid: id, Data: plaintext})
 	first.Close()
 	if err != nil {
 		t.Fatal(err)

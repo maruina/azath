@@ -14,7 +14,6 @@ import (
 	kms "github.com/siderolabs/kms-client/api/kms"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/maruina/azath/internal/crypto"
@@ -24,22 +23,9 @@ import (
 // fakeSealer implements kms.KMSServiceServer for testing.
 type fakeSealer struct {
 	kms.UnimplementedKMSServiceServer
-	sealToken []byte
 }
 
 func (f *fakeSealer) Seal(ctx context.Context, req *kms.Request) (*kms.Response, error) {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return nil, status.Error(codes.Unauthenticated, "missing metadata")
-	}
-	vals := md.Get("authorization")
-	if len(vals) == 0 {
-		return nil, status.Error(codes.Unauthenticated, "missing authorization")
-	}
-	expected := "Bearer " + string(f.sealToken)
-	if vals[0] != expected {
-		return nil, status.Error(codes.Unauthenticated, "invalid token")
-	}
 	// Simulate sealing: just return the data with a prefix.
 	resp := make([]byte, 4+12+len(req.GetData()))
 	copy(resp[16:], req.GetData())
@@ -52,14 +38,14 @@ func (f *fakeSealer) Unseal(ctx context.Context, req *kms.Request) (*kms.Respons
 
 // startFakeGRPC starts a fake KMS server on a free localhost port and returns
 // the address and a cleanup function.
-func startFakeGRPC(t *testing.T, sealToken []byte) (addr string, cleanup func()) {
+func startFakeGRPC(t *testing.T) (addr string, cleanup func()) {
 	t.Helper()
 	lis, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("creating listener: %v", err)
 	}
 	srv := grpc.NewServer()
-	kms.RegisterKMSServiceServer(srv, &fakeSealer{sealToken: sealToken})
+	kms.RegisterKMSServiceServer(srv, &fakeSealer{})
 	go func() {
 		_ = srv.Serve(lis)
 	}()
@@ -84,7 +70,7 @@ func TestSealCmd_Flags(t *testing.T) {
 	cmd := newSealCmd()
 	f := cmd.Flags()
 
-	required := []string{"config", "seal-token-file"}
+	required := []string{"config"}
 	for _, name := range required {
 		if fl := f.Lookup(name); fl == nil {
 			t.Errorf("--%s flag not registered", name)
@@ -112,7 +98,7 @@ func TestSealCmd_Flags(t *testing.T) {
 
 func TestSealCmd_MissingConfig(t *testing.T) {
 	t.Parallel()
-	err := runSeal(t.Context(), "", nil, "/tmp/token", "", false, false)
+	err := runSeal(t.Context(), "", nil, "", false, false)
 	if err == nil {
 		t.Fatal("expected error for missing config, got nil")
 	}
@@ -131,36 +117,9 @@ endpoints:
 	if err := os.WriteFile(cfgPath, []byte(badCfg), 0o600); err != nil {
 		t.Fatalf("writing config: %v", err)
 	}
-	tokenPath := filepath.Join(dir, "token")
-	if err := os.WriteFile(tokenPath, []byte("test-token"), 0o600); err != nil {
-		t.Fatalf("writing token: %v", err)
-	}
-	err := runSeal(t.Context(), cfgPath, nil, tokenPath, "", false, false)
+	err := runSeal(t.Context(), cfgPath, nil, "", false, false)
 	if err == nil {
 		t.Fatal("expected error for invalid UUID, got nil")
-	}
-}
-
-func TestSealCmd_EmptyTokenFile(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	cfgPath := writeClientConfig(t, "550e8400-e29b-41d4-a716-446655440000", "127.0.0.1:5000")
-	tokenPath := filepath.Join(dir, "token")
-	if err := os.WriteFile(tokenPath, []byte{}, 0o600); err != nil {
-		t.Fatalf("writing token: %v", err)
-	}
-	err := runSeal(t.Context(), cfgPath, nil, tokenPath, "", false, false)
-	if err == nil {
-		t.Fatal("expected error for empty token file, got nil")
-	}
-}
-
-func TestSealCmd_MissingTokenFile(t *testing.T) {
-	t.Parallel()
-	cfgPath := writeClientConfig(t, "550e8400-e29b-41d4-a716-446655440000", "127.0.0.1:5000")
-	err := runSeal(t.Context(), cfgPath, nil, "/nonexistent/token", "", false, false)
-	if err == nil {
-		t.Fatal("expected error for missing token file, got nil")
 	}
 }
 
@@ -172,40 +131,14 @@ func TestSealCmd_Success_TLS(t *testing.T) {
 
 func TestSealCmd_Success_h2c(t *testing.T) {
 	t.Parallel()
-	sealToken := []byte("test-seal-token")
-	addr, cleanup := startFakeGRPC(t, sealToken)
+	addr, cleanup := startFakeGRPC(t)
 	defer cleanup()
 
-	dir := t.TempDir()
 	deviceUUID := "550e8400-e29b-41d4-a716-446655440000"
 	_ = writeClientConfig(t, deviceUUID, addr)
-
-	tokenPath := filepath.Join(dir, "token")
-	if err := os.WriteFile(tokenPath, sealToken, 0o600); err != nil {
-		t.Fatalf("writing token: %v", err)
-	}
 
 	// The happy path requires stdin input; tested via integration tests.
-	// This validates config loading and token reading work correctly.
-}
-
-func TestSealCmd_WrongToken_Rejected(t *testing.T) {
-	t.Parallel()
-	sealToken := []byte("correct-token")
-	addr, cleanup := startFakeGRPC(t, sealToken)
-	defer cleanup()
-
-	dir := t.TempDir()
-	deviceUUID := "550e8400-e29b-41d4-a716-446655440000"
-	_ = writeClientConfig(t, deviceUUID, addr)
-
-	wrongTokenPath := filepath.Join(dir, "token")
-	if err := os.WriteFile(wrongTokenPath, []byte("wrong-token"), 0o600); err != nil {
-		t.Fatalf("writing token: %v", err)
-	}
-
-	// Wrong token is rejected at the RPC level by the fake server.
-	// Integration tests verify end-to-end behavior.
+	// This validates config loading works correctly.
 }
 
 func TestConstantTimeEqual(t *testing.T) {

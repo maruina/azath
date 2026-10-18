@@ -58,7 +58,6 @@ func TestValidate_RequiredFields(t *testing.T) {
 		wantMsg string
 	}{
 		{name: "missing server.listen", mutate: func(c *config.Config) { c.Server.Listen = "" }, wantMsg: "server.listen is required"},
-		{name: "missing seal_token_ref", mutate: func(c *config.Config) { c.Server.SealTokenRef = "" }, wantMsg: "server.seal_token_ref is required"},
 		{name: "missing master_key.source", mutate: func(c *config.Config) { c.MasterKey.Source = "" }, wantMsg: "master_key.source must be: file"},
 		{name: "unsupported master_key.source", mutate: func(c *config.Config) { c.MasterKey.Source = "1password" }, wantMsg: "master_key.source must be: file"},
 		{name: "missing master_key.path", mutate: func(c *config.Config) { c.MasterKey.Path = "" }, wantMsg: `master_key.path is required when source is "file"`},
@@ -218,7 +217,7 @@ func TestValidate_GateType(t *testing.T) {
 		wantMsg string
 	}{
 		{name: "unknown gate type", mutate: func(c *config.Config) { c.Gate = &config.GateConfig{Type: "magic"} }, wantMsg: "gate.type must be: telegram"},
-		{name: "telegram type notifications.telegram nil", mutate: func(c *config.Config) { c.Notifications.Telegram = nil }, wantMsg: `notifications.telegram is required when gate.type is "telegram"`},
+		{name: "telegram type notifications.telegram nil", mutate: func(c *config.Config) { c.Notifications.Telegram = nil }, wantMsg: "gate.telegram.bot_token_ref is required"},
 		{name: "telegram type gate.telegram nil", mutate: func(c *config.Config) { c.Gate = &config.GateConfig{Type: config.GateTypeTelegram} }, wantMsg: `gate.telegram config is required when gate.type is "telegram"`},
 	}
 	for _, tc := range cases {
@@ -249,16 +248,48 @@ func TestValidate_GateAuthorizedUserID(t *testing.T) {
 	}
 }
 
-func TestValidate_GateAuthorizedUserIDStored(t *testing.T) {
+func TestValidate_UnifiedGateTelegramConfig(t *testing.T) {
 	t.Parallel()
-	cfg := validConfig()
-	cfg.Gate.Telegram.AuthorizedUserID = "987654321"
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Listen:        "127.0.0.1:7800",
+			MetricsListen: "127.0.0.1:9090",
+			LogLevel:      "info",
+			LogFormat:     "json",
+			Name:          "test-server",
+		},
+		MasterKey: config.MasterKeyConfig{
+			Source: config.MasterKeySourceFile,
+			Path:   "/etc/azath/master.key",
+		},
+		Devices: []config.DeviceConfig{{Name: "talos-node", UUID: "550e8400-e29b-41d4-a716-446655440000"}},
+		Gate: &config.GateConfig{
+			Type: config.GateTypeTelegram,
+			Telegram: &config.TelegramGateConfig{
+				BotTokenRef:      "op://vault/azath/bot-token",
+				ChatID:           "123456789",
+				AuthorizedUserID: "987654321",
+				RateLimit:        "5m",
+				ApprovalTTL:      "10m",
+				ApprovalCacheTTL: "2m",
+			},
+		},
+	}
 	vc, err := config.Validate(cfg)
 	if err != nil {
-		t.Fatalf("Validate: %v", err)
+		t.Fatalf("Validate failed for unified config: %v", err)
 	}
-	if vc.TelegramAuthorizedUserID != 987654321 {
-		t.Errorf("TelegramAuthorizedUserID = %d, want 987654321", vc.TelegramAuthorizedUserID)
+	if vc.TelegramBotTokenRef != "op://vault/azath/bot-token" {
+		t.Errorf("TelegramBotTokenRef = %q, want 'op://vault/azath/bot-token'", vc.TelegramBotTokenRef)
+	}
+	if vc.TelegramChatID != "123456789" {
+		t.Errorf("TelegramChatID = %q, want '123456789'", vc.TelegramChatID)
+	}
+	if vc.TelegramRateLimit != 5*time.Minute {
+		t.Errorf("TelegramRateLimit = %v, want 5m", vc.TelegramRateLimit)
+	}
+	if vc.TelegramApprovalTTL != 10*time.Minute {
+		t.Errorf("TelegramApprovalTTL = %v, want 10m", vc.TelegramApprovalTTL)
 	}
 }
 
@@ -387,7 +418,7 @@ func TestValidate_MultiError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected errors, got nil")
 	}
-	for _, s := range []string{"server.listen is required", "server.seal_token_ref is required", "master_key.source must be"} {
+	for _, s := range []string{"server.listen is required", "master_key.source must be"} {
 		if !strings.Contains(err.Error(), s) {
 			t.Errorf("error missing %q\nfull error: %s", s, err.Error())
 		}

@@ -2,16 +2,13 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	kms "github.com/siderolabs/kms-client/api/kms"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/maruina/azath/internal/crypto"
@@ -27,15 +24,13 @@ type DeviceInfo struct {
 }
 
 // KMSServer implements kms.KMSServiceServer. It handles Seal and Unseal RPCs
-// with bearer-token auth and gate approval.
-// Call Close after draining RPCs to zero the seal token.
+// with gate approval and config-driven device authorization.
 type KMSServer struct {
 	kms.UnimplementedKMSServiceServer
 
-	km        *keymanager.Manager
-	metrics   *observability.Metrics
-	logger    *slog.Logger
-	sealToken []byte // zeroed by Close
+	km      *keymanager.Manager
+	metrics *observability.Metrics
+	logger  *slog.Logger
 
 	gate gate.Gate
 
@@ -47,15 +42,6 @@ type KMSServer struct {
 
 // Option configures a KMSServer.
 type Option func(*KMSServer)
-
-// WithSealToken sets the bearer token required for Seal RPCs.
-// KMSServer copies the token; the caller may zero its own copy immediately.
-func WithSealToken(token []byte) Option {
-	return func(s *KMSServer) {
-		s.sealToken = make([]byte, len(token))
-		copy(s.sealToken, token)
-	}
-}
 
 // WithGate sets the gate used to approve Unseal requests.
 // A nil gate (the default) denies all requests.
@@ -97,20 +83,13 @@ func New(km *keymanager.Manager, m *observability.Metrics, opts ...Option) *KMSS
 	return s
 }
 
-// Close zeros the seal token after the caller has drained RPCs.
-func (s *KMSServer) Close() {
-	crypto.Zero(s.sealToken)
-}
+// Close shuts down the KMS server after draining RPCs.
+func (s *KMSServer) Close() {}
 
 // Seal encrypts the data in req.Data using the master key, with the node UUID
-// as additional authenticated data. The caller must provide a valid bearer token
-// matching the configured seal token.
+// as additional authenticated data. The device UUID must be configured and enabled.
 func (s *KMSServer) Seal(ctx context.Context, req *kms.Request) (*kms.Response, error) {
 	start := time.Now()
-
-	if err := s.checkSealToken(ctx); err != nil {
-		return nil, err
-	}
 
 	nodeUUID, err := uuid.Parse(req.GetNodeUuid())
 	if err != nil {
@@ -189,6 +168,11 @@ func (s *KMSServer) Unseal(ctx context.Context, req *kms.Request) (*kms.Response
 	}
 	defer sealer.Destroy()
 
+	// deliberate: validate the blob with AES-GCM before prompting Telegram to avoid
+	// alerting operators on malformed blobs or wrong instance tags. We decrypt a
+	// second time after approval so plaintext is not retained in memory during
+	// the human approval wait (which can take minutes). Cost is negligible for
+	// small disk keys and passphrases.
 	validated, err := sealer.Unseal(req.GetData(), []byte(nodeUUIDStr))
 	if err != nil {
 		if errors.Is(err, crypto.ErrShortBlob) || errors.Is(err, crypto.ErrWrongInstance) {
@@ -226,34 +210,4 @@ func (s *KMSServer) Unseal(ctx context.Context, req *kms.Request) (*kms.Response
 	s.logger.InfoContext(ctx, "unseal", "node_uuid", nodeUUIDStr[:8], "device", dev.Name, "reason", "ok")
 
 	return &kms.Response{Data: plaintext}, nil
-}
-
-// checkSealToken extracts the bearer token from gRPC metadata and verifies it
-// against the configured seal token using constant-time comparison.
-func (s *KMSServer) checkSealToken(ctx context.Context) error {
-	// Guard against zero-length sealToken: subtle.ConstantTimeCompare(empty, nil)
-	// returns 1, which would bypass auth when no token is configured.
-	if len(s.sealToken) == 0 {
-		return status.Error(codes.Unauthenticated, "missing or invalid seal token")
-	}
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return status.Error(codes.Unauthenticated, "missing or invalid seal token")
-	}
-	vals := md.Get("authorization")
-	if len(vals) == 0 {
-		return status.Error(codes.Unauthenticated, "missing or invalid seal token")
-	}
-	tokenStr, ok := strings.CutPrefix(vals[0], "Bearer ")
-	if !ok {
-		return status.Error(codes.Unauthenticated, "missing or invalid seal token")
-	}
-	tokenBytes := []byte(tokenStr)
-	// tokenBytes is a copy from the gRPC wire buffer; zeroing is best-effort
-	// (the original string backing store cannot be zeroed).
-	defer crypto.Zero(tokenBytes)
-	if subtle.ConstantTimeCompare(tokenBytes, s.sealToken) != 1 {
-		return status.Error(codes.Unauthenticated, "missing or invalid seal token")
-	}
-	return nil
 }

@@ -31,7 +31,7 @@ const (
 type Config struct {
 	Server        ServerConfig    `yaml:"server"`
 	MasterKey     MasterKeyConfig `yaml:"master_key"`
-	Notifications NotifyConfig    `yaml:"notifications"`
+	Notifications NotifyConfig    `yaml:"notifications,omitempty"`
 	Devices       []DeviceConfig  `yaml:"devices"`
 	Gate          *GateConfig     `yaml:"gate,omitempty"`
 }
@@ -40,11 +40,13 @@ type Config struct {
 // a pure YAML schema; no runtime-derived state lives in it. ValidatedConfig is
 // the single source of truth for all computed fields needed at runtime.
 type ValidatedConfig struct {
-	// TelegramRateLimit is the parsed rate_limit from notifications.telegram.
-	// Zero if notifications.telegram is absent.
+	// TelegramBotTokenRef is the resolved bot_token_ref from gate.telegram (or notifications.telegram).
+	TelegramBotTokenRef string
+	// TelegramChatID is the chat_id from gate.telegram (or notifications.telegram).
+	TelegramChatID string
+	// TelegramRateLimit is the parsed rate_limit from gate.telegram (or notifications.telegram).
 	TelegramRateLimit time.Duration
-	// TelegramApprovalTTL is the parsed approval_ttl from notifications.telegram.
-	// Zero if notifications.telegram is absent.
+	// TelegramApprovalTTL is the parsed approval_ttl from gate.telegram (or notifications.telegram).
 	TelegramApprovalTTL time.Duration
 	// TelegramAuthorizedUserID is the parsed authorized_user_id from gate.telegram.
 	// Zero if gate.type is not "telegram".
@@ -60,7 +62,7 @@ type ServerConfig struct {
 	MetricsListen string `yaml:"metrics_listen"`
 	LogLevel      string `yaml:"log_level"`
 	LogFormat     string `yaml:"log_format"`
-	SealTokenRef  string `yaml:"seal_token_ref"`
+	SealTokenRef  string `yaml:"seal_token_ref,omitempty"` // deprecated: bearer token no longer required for Seal
 	Name          string `yaml:"name,omitempty"`
 }
 
@@ -99,15 +101,15 @@ type GateConfig struct {
 	Telegram *TelegramGateConfig `yaml:"telegram,omitempty"`
 }
 
-// TelegramGateConfig holds gate-specific settings for the Telegram gate.
-// Notification settings (bot_token_ref, chat_id, rate_limit, approval_ttl)
-// remain in notifications.telegram.
+// TelegramGateConfig holds settings for the Telegram approval gate.
+// For backwards compatibility, bot_token_ref, chat_id, rate_limit, and
+// approval_ttl can also be provided under notifications.telegram.
 type TelegramGateConfig struct {
-	// AuthorizedUserID is the Telegram user ID of the person allowed to approve
-	// unseal requests. Must be a positive integer string.
+	BotTokenRef      string `yaml:"bot_token_ref,omitempty"`
+	ChatID           string `yaml:"chat_id,omitempty"`
 	AuthorizedUserID string `yaml:"authorized_user_id"`
-	// ApprovalCacheTTL is the duration to cache approved devices. Zero disables caching.
-	// Defaults to 2m if not set.
+	RateLimit        string `yaml:"rate_limit,omitempty"`
+	ApprovalTTL      string `yaml:"approval_ttl,omitempty"`
 	ApprovalCacheTTL string `yaml:"approval_cache_ttl,omitempty"`
 }
 

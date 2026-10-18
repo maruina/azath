@@ -20,16 +20,16 @@ shares:
     sealed_blob: /etc/azath/secrets/media.key.sealed
 ```
 
-Configure the same UUID as an enabled device on every server. Names must be unique within `shares`. Use one reliable LAN endpoint first. Additional endpoints provide transport failover, not independent retries of a failed mount. Servers have independent approval caches.
+Configure the same UUID as an enabled device on every server (generated via `azath config new-device --name synology --config /etc/azath/server.yaml`). Names must be unique within `shares`. Use one reliable LAN endpoint first. Additional endpoints provide transport failover, not independent retries of a failed mount. Servers have independent approval caches.
 
 ## Seal each passphrase
-On a trusted machine, use the same config and a root-only seal-token file:
+On a trusted machine, use the same client config:
 
 ```sh
-azath seal --config /etc/azath/client-synology.yaml --seal-token-file /etc/azath/seal-token --out /etc/azath/secrets/homes.key.sealed --prompt
+azath seal --config /etc/azath/client-synology.yaml --out /etc/azath/secrets/homes.key.sealed --prompt
 ```
 
-Repeat for `media` with its own passphrase and output path. Transfer only the config and sealed blobs to the NAS. Remove the seal-token file from the NAS after enrollment. Keep config and blobs root-owned and restrict access; see [deployment permissions](../../deploy/README.md).
+Repeat for `media` with its own passphrase and output path. Transfer only the config and sealed blobs to the NAS. Keep config and blobs root-owned and restrict access; see [deployment permissions](../../deploy/README.md).
 
 ## Unlock and schedule at boot
 Run as root on DSM:

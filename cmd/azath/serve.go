@@ -127,37 +127,24 @@ func runServe(ctx context.Context, configPath string, dev bool, telegramAPIBase 
 	} else {
 		resolver = secret.OPResolver{}
 	}
-	sealToken, err := resolver.Resolve(ctx, cfg.Server.SealTokenRef)
-	if err != nil {
-		return fmt.Errorf("resolving seal token: %w", err)
-	}
-	defer crypto.ZeroOnReturn(&sealToken)
 
 	// Initialize Telegram gate if configured.
 	var g gate.Gate
 	if cfg.Gate != nil && cfg.Gate.Type == config.GateTypeTelegram {
-		if cfg.Notifications.Telegram == nil {
-			return errors.New("notifications.telegram is required for telegram gate")
-		}
 		var botToken []byte
-		botToken, err = resolver.Resolve(ctx, cfg.Notifications.Telegram.BotTokenRef)
+		botToken, err = resolver.Resolve(ctx, vc.TelegramBotTokenRef)
 		if err != nil {
 			return fmt.Errorf("resolving bot token: %w", err)
 		}
 		defer crypto.ZeroOnReturn(&botToken)
 
-		approvalTTL, parseErr := time.ParseDuration(cfg.Notifications.Telegram.ApprovalTTL)
-		if parseErr != nil {
-			return fmt.Errorf("parsing approval TTL: %w", parseErr)
-		}
-
 		gateOptions = append(gateOptions, gate.WithPromptRateLimit(vc.TelegramRateLimit))
 		g, err = gate.NewTelegramGate(
 			cfg.Server.Name,
 			botToken,
-			cfg.Notifications.Telegram.ChatID,
+			vc.TelegramChatID,
 			vc.TelegramAuthorizedUserID,
-			approvalTTL,
+			vc.TelegramApprovalTTL,
 			vc.TelegramApprovalCacheTTL,
 			logger,
 			gateOptions...,
@@ -173,14 +160,11 @@ func runServe(ctx context.Context, configPath string, dev bool, telegramAPIBase 
 	}
 
 	kmsSrv := server.New(km, metrics,
-		server.WithSealToken(sealToken),
 		server.WithGate(g),
 		server.WithDevices(devices),
 		server.WithLogger(logger),
 	)
 	defer kmsSrv.Close()
-	// KMSServer copies the token; zero our local slice immediately.
-	crypto.Zero(sealToken)
 
 	// Plaintext gRPC on loopback — Caddy terminates TLS externally.
 	grpcSrv, healthSrv := server.NewGRPCServer(kmsSrv, logger)

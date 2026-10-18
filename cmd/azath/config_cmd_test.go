@@ -55,7 +55,7 @@ func TestConfigValidate_Valid(t *testing.T) {
 
 func TestConfigValidate_Invalid(t *testing.T) {
 	t.Parallel()
-	// Missing seal_token_ref.
+	// Missing gate when devices are configured.
 	invalid := `
 server:
   listen: "127.0.0.1:7800"
@@ -70,8 +70,8 @@ devices:
 	if err == nil {
 		t.Fatal("expected error for invalid config, got nil")
 	}
-	if !strings.Contains(err.Error(), "seal_token_ref") {
-		t.Errorf("err.Error() = %q, want substring %q", err.Error(), "seal_token_ref")
+	if !strings.Contains(err.Error(), "gate is required") {
+		t.Errorf("err.Error() = %q, want substring %q", err.Error(), "gate is required")
 	}
 }
 
@@ -90,7 +90,7 @@ devices:
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	for _, want := range []string{"server.listen", "server.seal_token_ref", "master_key.path"} {
+	for _, want := range []string{"server.listen", "master_key.path", "gate is required"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("expected %q in err.Error(), got: %s", want, err.Error())
 		}
@@ -124,11 +124,55 @@ func TestConfigValidate_MissingFile(t *testing.T) {
 	}
 }
 
+func TestConfigValidate_ClientConfig(t *testing.T) {
+	t.Parallel()
+	validClient := `
+device:
+  name: synology
+  uuid: 550e8400-e29b-41d4-a716-446655440000
+endpoints:
+  - https://azath-lan.example:443
+shares:
+  - name: homes
+    sealed_blob: /etc/azath/secrets/homes.key.sealed
+`
+	out, err := runCmd(t, "config", "validate", testutil.WriteConfig(t, validClient))
+	if err != nil {
+		t.Fatalf("expected nil error for valid client config, got: %v", err)
+	}
+	if !strings.Contains(out, "config is valid") {
+		t.Errorf("expected 'config is valid' in output, got: %s", out)
+	}
+
+	invalidClient := `
+device:
+  name: synology
+  uuid: not-a-uuid
+endpoints:
+  - https://azath-lan.example:443
+`
+	_, err = runCmd(t, "config", "validate", testutil.WriteConfig(t, invalidClient))
+	if err == nil {
+		t.Fatal("expected error for invalid client config, got nil")
+	}
+}
+
 func TestConfigValidate_NoArgs(t *testing.T) {
 	t.Parallel()
 	_, err := runCmd(t, "config", "validate")
 	if err == nil {
 		t.Fatal("expected error when no path provided, got nil")
+	}
+}
+
+func TestConfigValidate_JSON(t *testing.T) {
+	t.Parallel()
+	out, err := runCmd(t, "config", "validate", "--json", testutil.WriteConfig(t, validConfigYAML))
+	if err != nil {
+		t.Fatalf("expected nil error for valid config --json, got: %v", err)
+	}
+	if !strings.Contains(out, `"valid":true`) || !strings.Contains(out, `"type":"server"`) {
+		t.Errorf("unexpected json output: %s", out)
 	}
 }
 

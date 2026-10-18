@@ -61,7 +61,6 @@ Back up these files regularly and transfer them securely:
 | Server config | `0640` | `/etc/azath/server.yaml` |
 | Client config | `0640` | `/etc/azath/client-synology.yaml` |
 | Sealed blobs | `0600` | `/etc/azath/secrets/*.sealed` |
-| Seal bearer token | `0600` | Re-issue via 1Password; re-seal affected blobs after rotation. |
 | Telegram bot token | `0600` | Re-issuable via @BotFather; use separate LAN and VPS bots. |
 | Caddy config | `0640` | `/etc/caddy/Caddyfile` |
 | 1Password service-account token | `0600` | `/etc/azath/onepassword.env` |

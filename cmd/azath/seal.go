@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
@@ -9,21 +8,17 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/google/uuid"
 	kms "github.com/siderolabs/kms-client/api/kms"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
-	"gopkg.in/yaml.v3"
 
+	"github.com/maruina/azath/internal/config"
 	"github.com/maruina/azath/internal/crypto"
 	"github.com/maruina/azath/internal/fsutil"
 )
@@ -32,12 +27,11 @@ const maxPlaintextSize = 1 << 20 // 1 MiB
 
 func newSealCmd() *cobra.Command {
 	var (
-		configPath    string
-		endpoint      []string
-		sealTokenFile string
-		outPath       string
-		prompt        bool
-		insecureDev   bool
+		configPath  string
+		endpoint    []string
+		outPath     string
+		prompt      bool
+		insecureDev bool
 	)
 
 	cmd := &cobra.Command{
@@ -46,31 +40,27 @@ func newSealCmd() *cobra.Command {
 		Long: `Seal reads plaintext from stdin (or interactively with --prompt), calls the
 KMS Seal RPC, and writes the base64-encoded sealed blob to stdout or to a file.
 
-The seal token is read from --seal-token-file and used as a Bearer token in the
-gRPC metadata. The device UUID from the client config identifies the target node.
+The device UUID from the client config identifies the target node.
 
 Example:
   azath seal \
     --config /etc/azath/client.yaml \
-    --seal-token-file /etc/azath/seal-token \
     --out /etc/azath/secrets/homes.key.sealed \
     --prompt`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSeal(cmd.Context(), configPath, endpoint, sealTokenFile, outPath, prompt, insecureDev)
+			return runSeal(cmd.Context(), configPath, endpoint, outPath, prompt, insecureDev)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "client config path")
 	cmd.Flags().StringSliceVar(&endpoint, "endpoint", nil, "gRPC endpoint(s); overrides config endpoints")
 	_ = cmd.MarkFlagRequired("config")
-	cmd.Flags().StringVar(&sealTokenFile, "seal-token-file", "", "path to seal bearer token file")
-	_ = cmd.MarkFlagRequired("seal-token-file")
 	cmd.Flags().StringVar(&outPath, "out", "", "output path; if omitted, write base64 to stdout")
 	cmd.Flags().BoolVar(&prompt, "prompt", false, "read plaintext interactively with terminal echo disabled")
 	cmd.Flags().BoolVar(&insecureDev, "insecure-dev", false, "use plaintext h2c for localhost/tests only")
 	return cmd
 }
 
-func runSeal(ctx context.Context, configPath string, endpoints []string, sealTokenFile, outPath string, prompt, insecureDev bool) error {
+func runSeal(ctx context.Context, configPath string, endpoints []string, outPath string, prompt, insecureDev bool) error {
 	// Load and validate client config.
 	clientCfg, err := loadClientConfig(configPath)
 	if err != nil {
@@ -82,18 +72,6 @@ func runSeal(ctx context.Context, configPath string, endpoints []string, sealTok
 	if len(endpoints) == 0 {
 		return errors.New("at least one endpoint is required (from config or --endpoint)")
 	}
-
-	// Read seal token from file.
-	tokenBytes, err := os.ReadFile(sealTokenFile) // #nosec G304 — path comes from CLI flag
-	if err != nil {
-		return fmt.Errorf("reading seal token file: %w", err)
-	}
-	// Trim a single trailing newline if present.
-	tokenBytes = bytes.TrimSuffix(tokenBytes, []byte("\n"))
-	if len(tokenBytes) == 0 {
-		return errors.New("seal token file is empty")
-	}
-	defer crypto.ZeroOnReturn(&tokenBytes)
 
 	// Read plaintext.
 	plaintext, err := readPlaintext(prompt)
@@ -117,14 +95,12 @@ func runSeal(ctx context.Context, configPath string, endpoints []string, sealTok
 	}
 	defer func() { _ = conn.Close() }()
 
-	// Call Seal RPC with bearer token.
-	md := metadata.Pairs("authorization", "Bearer "+string(tokenBytes))
+	// Call Seal RPC.
 	deadlineCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	callCtx := metadata.NewOutgoingContext(deadlineCtx, md)
 	client := kms.NewKMSServiceClient(conn)
 
-	resp, err := client.Seal(callCtx, &kms.Request{
+	resp, err := client.Seal(deadlineCtx, &kms.Request{
 		NodeUuid: clientCfg.Device.UUID,
 		Data:     plaintext,
 	})
@@ -224,73 +200,10 @@ func buildDialOptions(insecureDev bool) []grpc.DialOption {
 	}
 }
 
-type shareConfig struct {
-	Name       string `yaml:"name"`
-	SealedBlob string `yaml:"sealed_blob"`
-}
+type shareConfig = config.ShareConfig
+type clientConfig = config.ClientConfig
+type clientDeviceConfig = config.ClientDeviceConfig
 
-type clientConfig struct {
-	Shares    []shareConfig      `yaml:"shares"`
-	Device    clientDeviceConfig `yaml:"device"`
-	Endpoints []string           `yaml:"endpoints"`
-}
-
-type clientDeviceConfig struct {
-	Name string `yaml:"name"`
-	UUID string `yaml:"uuid"`
-}
-
-// loadClientConfig loads and validates a standalone client config file.
-func loadClientConfig(path string) (*clientConfig, error) {
-	data, err := readBounded(path, 64<<10)
-	if err != nil {
-		return nil, fmt.Errorf("reading config: %w", err)
-	}
-
-	var cfg clientConfig
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	if decodeErr := dec.Decode(&cfg); decodeErr != nil {
-		return nil, fmt.Errorf("parsing config: %w", decodeErr)
-	}
-
-	if cfg.Device.Name == "" {
-		return nil, errors.New("client.device.name is required")
-	}
-	if cfg.Device.UUID == "" {
-		return nil, errors.New("client.device.uuid is required")
-	}
-	if len(cfg.Endpoints) == 0 {
-		return nil, errors.New("client.endpoints must contain at least one endpoint")
-	}
-
-	if decodeErr := dec.Decode(new(any)); !errors.Is(decodeErr, io.EOF) {
-		return nil, errors.New("config must contain exactly one YAML document")
-	}
-	parsed, err := uuid.Parse(cfg.Device.UUID)
-	if err != nil || parsed.String() != cfg.Device.UUID {
-		return nil, errors.New("device UUID must be canonical")
-	}
-	if len(cfg.Device.Name) > 128 || len(cfg.Endpoints) > 8 || len(cfg.Shares) > 64 {
-		return nil, errors.New("config exceeds input limits")
-	}
-	for _, endpoint := range cfg.Endpoints {
-		if len(endpoint) > 2048 {
-			return nil, errors.New("endpoint too long")
-		}
-		if _, err := endpointTarget(endpoint); err != nil {
-			return nil, err
-		}
-	}
-	seen := map[string]struct{}{}
-	for _, share := range cfg.Shares {
-		if !regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_. -]{0,79}$`).MatchString(share.Name) || len(share.SealedBlob) == 0 || len(share.SealedBlob) > 4096 || strings.ContainsRune(share.SealedBlob, 0) {
-			return nil, errors.New("invalid share name or blob path")
-		}
-		if _, ok := seen[share.Name]; ok {
-			return nil, errors.New("duplicate share name")
-		}
-		seen[share.Name] = struct{}{}
-	}
-	return &cfg, nil
+func loadClientConfig(path string) (*config.ClientConfig, error) {
+	return config.LoadClientConfig(path)
 }

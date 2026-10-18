@@ -44,8 +44,6 @@ func newTestServerWithGRPC(
 	var logger *slog.Logger
 	var serverOpts []server.Option
 
-	serverOpts = append(serverOpts, server.WithSealToken([]byte(testSealToken)))
-
 	for _, opt := range testOpts {
 		switch v := opt.(type) {
 		case loggerOpt:
@@ -112,7 +110,7 @@ func TestNewGRPCServer_HealthCheck_Serving(t *testing.T) {
 	m := newTestMetrics(t)
 	mgr := newUnloadedManager(t, m)
 
-	srv := server.New(mgr, m, server.WithSealToken([]byte(testSealToken)))
+	srv := server.New(mgr, m)
 	gs, _ := server.NewGRPCServer(srv, nil)
 
 	lis := bufconn.Listen(bufSize)
@@ -150,7 +148,7 @@ func TestNewGRPCServer_MaxRecvMsgSize_Enforced(t *testing.T) {
 	_, client := newTestServerWithGRPC(t, mgr, m, server.WithDevices(devices))
 
 	oversized := make([]byte, (1<<20)+1)
-	_, err := client.Seal(ctxWithBearer(t.Context(), testSealToken), &kms.Request{
+	_, err := client.Seal(t.Context(), &kms.Request{
 		NodeUuid: nodeUUID,
 		Data:     oversized,
 	})

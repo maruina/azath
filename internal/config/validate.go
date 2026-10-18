@@ -60,10 +60,9 @@ func validateServer(cfg *Config, errs *[]error) {
 	if _, ok := validLogFormats[s.LogFormat]; !ok {
 		*errs = append(*errs, errors.New("server.log_format must be one of: json, text"))
 	}
-	if s.SealTokenRef == "" {
-		*errs = append(*errs, errors.New("server.seal_token_ref is required"))
+	if s.SealTokenRef != "" {
+		validateOpRef("server.seal_token_ref", s.SealTokenRef, errs)
 	}
-	validateOpRef("server.seal_token_ref", s.SealTokenRef, errs)
 	validateLoopbackAddr("server.metrics_listen", s.MetricsListen, errs)
 }
 
@@ -159,16 +158,48 @@ func validateGate(cfg *Config, vc *ValidatedConfig, errs *[]error) {
 	}
 	switch g.Type {
 	case GateTypeTelegram:
-		// notifications.telegram provides the bot credentials used to send approval requests.
-		if cfg.Notifications.Telegram == nil {
-			*errs = append(*errs, errors.New(`notifications.telegram is required when gate.type is "telegram"`))
-			return
-		}
-		// gate.telegram provides the gate-specific setting: who is allowed to approve.
 		if g.Telegram == nil {
 			*errs = append(*errs, errors.New(`gate.telegram config is required when gate.type is "telegram"`))
 			return
 		}
+
+		botTokenRef := g.Telegram.BotTokenRef
+		if botTokenRef == "" && cfg.Notifications.Telegram != nil {
+			botTokenRef = cfg.Notifications.Telegram.BotTokenRef
+		}
+		if botTokenRef == "" {
+			*errs = append(*errs, errors.New(`gate.telegram.bot_token_ref is required`))
+		} else {
+			validateOpRef("gate.telegram.bot_token_ref", botTokenRef, errs)
+			vc.TelegramBotTokenRef = botTokenRef
+		}
+
+		chatID := g.Telegram.ChatID
+		if chatID == "" && cfg.Notifications.Telegram != nil {
+			chatID = cfg.Notifications.Telegram.ChatID
+		}
+		if chatID == "" {
+			*errs = append(*errs, errors.New(`gate.telegram.chat_id is required`))
+		} else {
+			vc.TelegramChatID = chatID
+		}
+
+		rateLimit := g.Telegram.RateLimit
+		rateField := "gate.telegram.rate_limit"
+		if rateLimit == "" && cfg.Notifications.Telegram != nil {
+			rateLimit = cfg.Notifications.Telegram.RateLimit
+			rateField = "notifications.telegram.rate_limit"
+		}
+		validateDuration(rateField, rateLimit, &vc.TelegramRateLimit, errs)
+
+		approvalTTL := g.Telegram.ApprovalTTL
+		ttlField := "gate.telegram.approval_ttl"
+		if approvalTTL == "" && cfg.Notifications.Telegram != nil {
+			approvalTTL = cfg.Notifications.Telegram.ApprovalTTL
+			ttlField = "notifications.telegram.approval_ttl"
+		}
+		validateDuration(ttlField, approvalTTL, &vc.TelegramApprovalTTL, errs)
+
 		if g.Telegram.AuthorizedUserID == "" {
 			*errs = append(*errs, errors.New(`gate.telegram.authorized_user_id is required when gate.type is "telegram"`))
 		} else {

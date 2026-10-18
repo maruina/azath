@@ -85,19 +85,18 @@ internal/
 - Blob format: `[4-byte instance tag | 12-byte nonce | ciphertext + GCM tag]`.
 - Nonce = 4-byte random prefix + 8-byte atomic counter seeded at construction.
 - Every plaintext key/passphrase/master-key slice must be zeroed immediately after use with `crypto.Zero` or `crypto.ZeroOnReturn`.
-- Do not log or return key material, sealed blobs, passphrases, bot tokens, or seal tokens in errors.
+- Do not log or return key material, sealed blobs, passphrases, or bot tokens in errors.
 - Do not convert key/passphrase bytes to strings except at unavoidable external API/exec boundaries; document any exception.
-- Use constant-time comparison for bearer tokens.
 - Known limitation: Go's AES expanded key schedule cannot be zeroed.
 
 ## Server invariants
 
-- `Seal` requires a bearer token and only accepts configured, enabled devices.
+- `Seal` only accepts configured, enabled devices in `devices[]`.
 - `Unseal` returns `codes.OK` plus random bytes for every failure path.
 - Disabled, unknown, gate-denied, decrypt-error, wrong-instance, and panic paths must be indistinguishable to callers.
 - Disabled devices must not trigger Telegram prompts or use approval cache.
 - `NewGRPCServer` must keep `grpc.MaxRecvMsgSize(1 << 20)` and panic recovery.
-- Drain RPCs with gRPC graceful shutdown before `KMSServer.Close()` zeros the seal token. Gate close drains its own work before zeroing secrets.
+- Drain RPCs with gRPC graceful shutdown before shutdown. Gate close drains its own work before zeroing secrets.
 
 ## Telegram gate requirements
 

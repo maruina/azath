@@ -40,7 +40,7 @@ The server codec clears application-owned response bytes after protobuf serializ
 
 ## Client model
 
-- `azath seal` is a bootstrap CLI used once per secret to create sealed blobs. It requires a seal token and reads the plaintext interactively (`--prompt`) or from stdin.
+- `azath seal` is a bootstrap CLI used once per secret to create sealed blobs. It reads the plaintext interactively (`--prompt`) or from stdin and calls the KMS `Seal` RPC for the configured device UUID.
 - `azath synology` unlocks configured shares sequentially at boot using only the fixed DSM executable. It continues after share failure and returns nonzero on partial failure.
 - `azath synology` tries endpoints in order after an RPC failure or empty response. A nonempty response ends endpoint failover for that share. A failed mount does not stop later shares. Denied, wrong-key, and decrypt-error responses contain random bytes, so a reachable failing server can prevent use of a later endpoint.
 - `azath seal` uses the first selected endpoint with a 30-second RPC deadline; it does not retry across endpoints.
