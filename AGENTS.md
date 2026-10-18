@@ -27,8 +27,8 @@ make clean   # remove bin/
 ## Module
 
 `github.com/maruina/azath` — Go 1.26. Entry point: `cmd/azath/main.go`.
-Subcommands: `serve`, `client`, `seal`, `config validate`, `config new-device`.
-`client` and `seal` are stubs until Tasks 11 and 12.
+Subcommands: `serve`, `client`, `seal`, `config validate`, `config new-device`,
+`config enable-device`, `config disable-device`.
 
 ## Directory structure
 

@@ -53,23 +53,3 @@ func TestVersion(t *testing.T) {
 		t.Errorf("expected --version output to contain %q, got: %s", "commit:", out)
 	}
 }
-
-func TestStubSubcommands(t *testing.T) {
-	t.Parallel()
-	// Subcommands that are still stubs.
-	for _, sub := range []string{} {
-		t.Run(sub, func(t *testing.T) {
-			t.Parallel()
-			cmd := newRootCmd("test", "abc1234")
-			cmd.SetArgs([]string{sub})
-			err := cmd.Execute()
-			if err == nil {
-				t.Fatalf("%q: expected error, got nil", sub)
-			}
-			// Stub commands return descriptive "not yet implemented" errors.
-			if !strings.Contains(err.Error(), "not yet implemented") {
-				t.Errorf("%q: expected 'not yet implemented' error, got: %v", sub, err)
-			}
-		})
-	}
-}

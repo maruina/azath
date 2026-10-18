@@ -103,6 +103,8 @@ Make it executable:
 chmod 700 /usr/local/bin/azath-unseal.sh
 ```
 
+`deploy/synology/azath-unseal.sh` in the repository is a fuller version of this script: it logs to `/var/log/azath-unseal.log` and retries each share so a boot succeeds after you approve the Telegram prompt.
+
 ### Security trade-off
 
 The unsealed passphrase appears as the final argument to `synoshare` and is visible in `/proc/pid/cmdline` for the duration of the process. This is an unavoidable consequence of the `synoshare` interface: it requires the passphrase as a command argument.
@@ -127,7 +129,9 @@ azath client \
 
 Expected behavior:
 
-- First run: Telegram approval required, then volume mounts.
+- First run: the server sends a Telegram prompt and returns an unusable placeholder response, so the volume does not mount and the command exits nonzero. This is deliberate: pending and denied responses are indistinguishable from successful ones on the wire.
+- After approving in Telegram, run the same command again: the approval cache answers and the volume mounts.
+- The shipped `azath-unseal.sh` retries each share (`ATTEMPTS` tries, `SLEEP_SECONDS` apart) so a fresh boot mounts automatically once you approve.
 - Subsequent runs within approval cache TTL: volume mounts without Telegram prompt.
 - Stopping then re-mounting: idempotent, exit code 0.
 - Wrong sealed blob or unreachable servers: exit code 1.
