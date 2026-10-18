@@ -1,73 +1,26 @@
 # azath
+Homelab key management service (KMS) for [Talos Linux](https://www.talos.dev/) disk encryption and [Synology](https://www.synology.com/) encrypted shared folders.
 
-Homelab KMS for [Talos Linux](https://www.talos.dev/) disk encryption and [Synology](https://www.synology.com/) encrypted shared-folder unsealing. azath seals secrets with AES-256-GCM and gates every successful unseal behind a Telegram approval, so a stolen client cannot auto-unseal without you.
+azath seals secrets with AES-256-GCM and requires Telegram approval or an in-memory approval-cache hit for every successful unseal. Disabling a device in server config denies sealing and unsealing for that device after the config is deployed and every server is restarted.
 
-> *In the Malazan world, Azath Houses are silent wardens — ancient structures that seal away forces too dangerous to leave unbound.*
+Run one LAN server or a redundant LAN + VPS pair with the same master key and device list. Caddy terminates TLS in front of loopback-only gRPC listeners. A server's storage, networking, and DNS must not depend on a shared folder it unlocks.
 
-## What is azath
+## Install and deploy
+The root-run installer supports Debian 13 servers and Synology DSM 7 clients on `amd64` and `arm64`.
 
-azath is a small gRPC KMS that implements the [Talos KMS protocol](https://www.talos.dev/v1.10/talos-guides/configuration/disk-encryption/#kms-key-slot) and serves encrypted passphrases to Synology clients. It can run as one LAN server or as a redundant LAN + VPS pair sharing a master key and device list. Caddy terminates TLS in front of loopback-only gRPC listeners. Every unseal requires a Telegram approval (or a short-lived approval cache hit); disabling a device in config and redeploying stops all sealing and unsealing for that device.
-
-| Command | Purpose | Status |
-|---------|---------|--------|
-| `azath serve` | gRPC `Seal`/`Unseal` server for the Talos KMS protocol | implemented |
-| `azath config validate <path>` | Validate server or client config | implemented |
-| `azath config new-device --name <name> --config <path>` | Append a configured device and print its generated UUID | implemented |
-| `azath config enable-device --name <name> --config <path>` | Enable a device in server config | implemented |
-| `azath config disable-device --name <name> --config <path>` | Disable a device in server config | implemented |
-| `azath seal` | Seal one secret against an azath endpoint | implemented |
-| `azath synology` | Unlock configured Synology shares sequentially | implemented |
-
-For Synology, one `azath synology` invocation unlocks all configured shares sequentially. A device-scoped approval window can cover all shares. A failed share does not stop later shares; partial failure returns nonzero. `seal` and `synology` use the same client config.
-
-For the threat model, shared-state requirements, and server/client model, see [docs/architecture/mvp.md](docs/architecture/mvp.md).
-
-## Install
-
-azath ships a root-run installer for Debian 13 servers and Synology DSM 7 clients on `amd64` and `arm64`.
-
-- [Install on Debian 13](docs/install-debian.md) — server binary, managed systemd unit, verification, rollback.
-- [Install on Synology DSM 7](docs/install-synology.md) — client binary only.
-
-End-to-end deployment runbooks:
-
+- [Install on Debian 13](docs/install-debian.md)
+- [Install on Synology DSM 7](docs/install-synology.md)
 - [Deploy LAN + VPS servers](docs/runbooks/deploy-lan-vps.md)
-- [Synology unseal flow](docs/runbooks/synology.md)
-- [Talos Linux disk encryption](docs/runbooks/talos.md)
+- [Unlock Synology encrypted shares](docs/runbooks/synology.md)
+- [Configure Talos disk encryption](docs/runbooks/talos.md)
 
-## Contributing
+## Documentation
+See the [documentation index](docs/README.md) for installation, operations, development, and architecture.
 
-azath is Go 1.26, module `github.com/maruina/azath`, entry point `cmd/azath/main.go`.
+- [Build and test](docs/contributing.md)
+- [Publish a release](docs/releasing.md)
+- [Architecture and threat model](docs/architecture/mvp.md)
+- [Security policy and vulnerability reporting](docs/security.md)
+- [Agent instructions](AGENTS.md)
 
-```bash
-make build   # build bin/azath (version + commit injected via ldflags)
-make test    # go test ./... -v -race -count=1
-make lint    # go vet + golangci-lint
-make vet     # go vet only
-make clean   # remove bin/
-```
-
-Run `make test` before marking work complete. It runs the Go tests, not the Docker suite. For changes to the Telegram gate, client/server wiring, endpoints, or Synology boot helper, also run the [Docker end-to-end suite](tests/docker/README.md). The `Docker E2E` job in [CI](.github/workflows/ci.yml) runs it on pull requests to `main` and pushes to `main`.
-
-The Docker suite uses real azath binaries and Caddy/TLS with simulated Telegram and mount operations. It does not establish DSM hardware compatibility. See the [Synology guide](docs/install-synology.md) for the validation target and remaining live checks.
-
-Code conventions, invariants, and validation commands are in [AGENTS.md](AGENTS.md).
-
-## Releasing
-
-Releases are tag-driven. Push a `v`-prefixed tag and the [Release workflow](.github/workflows/release.yml) builds the artifacts and publishes the GitHub release:
-
-```sh
-git tag v0.2.0
-git push origin v0.2.0
-```
-
-The release notes are generated by [GoReleaser](https://goreleaser.com) from the commits since the previous tag, grouped by conventional-commit type (`feat`/`fix`, with an "Other changes" bucket) and with merge commits and `chore(deps)`/`ci`/`style`/`test` noise excluded. See `.goreleaser.yml` for the exact filters.
-
-The release ships two archives (`azath_linux_amd64.tar.gz`, `azath_linux_arm64.tar.gz`), `checksums.txt`, and the root-run `install.sh` as release assets. The workflow asserts exactly those assets are published.
-
-Before cutting the first public release, follow the publication and rollout gates in [deploy/README.md](deploy/README.md): `goreleaser check` and `goreleaser release --snapshot --clean` validation, installer validation under `debian:13-slim` and `busybox:1.37`, a Gitleaks history audit, and smoke-testing Debian 13 and DSM 7.
-
-## Security model
-
-azath protects against stolen clients auto-unsealing without Telegram approval. It does not protect against compromise of both a sealed blob and the azath master key, or against approving a malicious request without verifying the server/device details in Telegram. See [docs/architecture/mvp.md](docs/architecture/mvp.md) for the full threat model.
+Implementation plans are under [`plans/`](plans/). All other documentation is under [`docs/`](docs/).
