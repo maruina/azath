@@ -178,6 +178,7 @@ func runServe(ctx context.Context, configPath string, dev bool) error {
 			vc.TelegramAuthorizedUserID,
 			approvalTTL,
 			vc.TelegramApprovalCacheTTL,
+			logger,
 		)
 		if err != nil {
 			return fmt.Errorf("creating telegram gate: %w", err)

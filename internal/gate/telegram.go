@@ -11,7 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -23,9 +25,22 @@ type telegramGateConfig struct {
 	serverName       string
 	botToken         []byte // zeroed on Close
 	chatID           string
+	chatIDInt        int64 // parsed chatID; validated at construction
 	authorizedUserID int64
 	approvalTTL      time.Duration
 	approvalCacheTTL time.Duration
+}
+
+// telegramAPIBase is the Telegram Bot API base URL.
+const telegramAPIBase = "https://api.telegram.org"
+
+// Option configures a TelegramGate.
+type Option func(*TelegramGate)
+
+// WithAPIBase overrides the Telegram Bot API base URL. Tests use it to point
+// the gate at a local stub; production callers never set it.
+func WithAPIBase(base string) Option {
+	return func(g *TelegramGate) { g.apiBase = base }
 }
 
 // callbackData is the payload embedded in Telegram inline keyboard buttons.
@@ -66,6 +81,12 @@ type TelegramGate struct {
 
 	// lastUpdateID tracks the highest update_id processed to avoid re-processing.
 	lastUpdateID int64
+
+	logger *slog.Logger
+
+	// apiBase is the Telegram Bot API base URL. Overridden in tests to point
+	// at an httptest server.
+	apiBase string
 }
 
 // NewTelegramGate creates a new TelegramGate.
@@ -77,6 +98,8 @@ func NewTelegramGate(
 	authorizedUserID int64,
 	approvalTTL time.Duration,
 	approvalCacheTTL time.Duration,
+	logger *slog.Logger,
+	opts ...Option,
 ) (*TelegramGate, error) {
 	if serverName == "" {
 		return nil, errors.New("server name is required")
@@ -87,6 +110,12 @@ func NewTelegramGate(
 	if chatID == "" {
 		return nil, errors.New("chat ID is required")
 	}
+	// Parse the chat ID once here so callback validation can fail closed
+	// instead of skipping the chat check on a parse error.
+	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("chat ID must be a numeric Telegram chat ID: %w", err)
+	}
 	if authorizedUserID <= 0 {
 		return nil, errors.New("authorized user ID must be positive")
 	}
@@ -96,6 +125,9 @@ func NewTelegramGate(
 	// approvalCacheTTL of 0 disables caching (valid per spec).
 	if approvalCacheTTL < 0 {
 		return nil, errors.New("approval cache TTL must not be negative")
+	}
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
 	}
 
 	// Generate HMAC key for signing callback data.
@@ -114,6 +146,7 @@ func NewTelegramGate(
 			serverName:       serverName,
 			botToken:         tokenCopy,
 			chatID:           chatID,
+			chatIDInt:        chatIDInt,
 			authorizedUserID: authorizedUserID,
 			approvalTTL:      approvalTTL,
 			approvalCacheTTL: approvalCacheTTL,
@@ -125,6 +158,14 @@ func NewTelegramGate(
 			Timeout: 30 * time.Second,
 		},
 		shutdown: cancel,
+		logger:   logger,
+		apiBase:  telegramAPIBase,
+	}
+
+	// Apply options before the polling goroutine starts so the first
+	// getUpdates call already uses the configured API base.
+	for _, opt := range opts {
+		opt(g)
 	}
 
 	// Start the long-polling goroutine.
@@ -152,6 +193,11 @@ func (g *TelegramGate) Check(ctx context.Context, device Device) (Decision, erro
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	// Expire pending requests older than the approval TTL. Without this, an
+	// ignored prompt would keep denying the device forever (no new prompt is
+	// sent while a pending entry exists) until restart.
+	g.purgeExpiredPendingLocked(time.Now())
+
 	// If there's already a pending request for this UUID, deny immediately.
 	if _, exists := g.pendingRequests[uuid]; exists {
 		return Denied, nil
@@ -165,10 +211,14 @@ func (g *TelegramGate) Check(ctx context.Context, device Device) (Decision, erro
 
 	// Send approval message asynchronously so we don't block the Unseal RPC.
 	// The approval will be received via the polling loop and matched by UUID.
+	// #nosec G118 — deliberate: the request context is cancelled when Check
+	// returns, but the send and its cleanup must complete.
 	go func() {
 		if err := g.sendApprovalMessage(device); err != nil {
-			// Log would go here if we had a logger passed in.
-			// For now, just remove the pending request on failure.
+			// A silent failure here would leave the operator waiting for a
+			// prompt that never arrives.
+			g.logger.ErrorContext(context.Background(), "gate: sending approval message failed",
+				"device_uuid", device.UUID, "error", err)
 			g.mu.Lock()
 			delete(g.pendingRequests, uuid)
 			g.mu.Unlock()
@@ -192,6 +242,18 @@ func (g *TelegramGate) Close() error {
 	g.mu.Unlock()
 
 	return nil
+}
+
+// purgeExpiredPendingLocked deletes pending requests older than the approval
+// TTL so a fresh prompt is sent on the next Check. Caller must hold g.mu.
+func (g *TelegramGate) purgeExpiredPendingLocked(now time.Time) {
+	for uuid, req := range g.pendingRequests {
+		if now.Sub(req.createdAt) > g.cfg.approvalTTL {
+			delete(g.pendingRequests, uuid)
+			g.logger.InfoContext(context.Background(), "gate: pending approval expired",
+				"device_uuid", uuid)
+		}
+	}
 }
 
 // sendApprovalMessage sends a Telegram message with inline keyboard buttons.
@@ -252,7 +314,7 @@ func (g *TelegramGate) sendApprovalMessage(device Device) error {
 		return fmt.Errorf("marshaling params: %w", err)
 	}
 
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", string(g.cfg.botToken))
+	url := fmt.Sprintf("%s/bot%s/sendMessage", g.apiBase, string(g.cfg.botToken))
 	req, err := http.NewRequestWithContext(context.Background(), "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
@@ -287,7 +349,9 @@ func (g *TelegramGate) pollLoop(ctx context.Context) {
 		}
 
 		if err := g.getUpdates(ctx); err != nil {
-			// On error, wait before retrying to avoid tight loops.
+			// On error, wait before retrying to avoid tight loops. Log so that
+			// an unreachable Telegram API is observable; Check still fails closed.
+			g.logger.ErrorContext(ctx, "gate: getUpdates failed", "error", err)
 			select {
 			case <-ctx.Done():
 				return
@@ -308,11 +372,7 @@ func (g *TelegramGate) pollLoop(ctx context.Context) {
 // getUpdates fetches updates from Telegram and processes callbacks.
 func (g *TelegramGate) getUpdates(ctx context.Context) error {
 	// Build getUpdates URL with offset and timeout.
-	url := fmt.Sprintf(
-		"https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30",
-		string(g.cfg.botToken),
-		g.lastUpdateID+1,
-	)
+	url := fmt.Sprintf("%s/bot%s/getUpdates?offset=%d&timeout=30", g.apiBase, string(g.cfg.botToken), g.lastUpdateID+1)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -407,16 +467,11 @@ func (g *TelegramGate) validateCallback(cb *struct {
 		return false
 	}
 
-	// Check chat ID.
-	if cb.Message.Chat.ID != 0 {
-		// Parse chatID as int64 for comparison.
-		var expectedChatID int64
-		if _, err := fmt.Sscanf(g.cfg.chatID, "%d", &expectedChatID); err != nil {
-			return true
-		}
-		if expectedChatID != 0 && cb.Message.Chat.ID != expectedChatID {
-			return false
-		}
+	// Check chat ID. Callbacks carry the chat of the message the button was
+	// attached to; a missing chat fails closed (ID 0 never matches a valid
+	// configured chat).
+	if cb.Message.Chat.ID != g.cfg.chatIDInt {
+		return false
 	}
 
 	return true
@@ -447,8 +502,13 @@ func (g *TelegramGate) processCallback(data callbackData) {
 		// Note: We can't directly signal back to the waiting Check call.
 		// The approval is stored in cache for subsequent requests.
 		// The original request will timeout or be retried.
-		_ = pending // could log device name here
+		g.logger.InfoContext(context.Background(), "gate: unseal approved",
+			"device_uuid", uuid, "device_name", pending.device.Name)
+		return
 	}
+
+	g.logger.InfoContext(context.Background(), "gate: unseal denied",
+		"device_uuid", uuid, "device_name", pending.device.Name)
 }
 
 // signCallbackData creates an HMAC signature for callback data.
