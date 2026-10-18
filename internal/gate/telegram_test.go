@@ -1,7 +1,6 @@
 package gate
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -71,6 +70,10 @@ func (f *fakeTelegram) handleSendMessage(w http.ResponseWriter, r *http.Request)
 		} `json:"reply_markup"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if len(body.ReplyMarkup.InlineKeyboard[0][0].CallbackData) > 64 || len(body.ReplyMarkup.InlineKeyboard[0][1].CallbackData) > 64 {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -160,11 +163,13 @@ func newTestGate(t *testing.T, ft *fakeTelegram, approvalTTL, cacheTTL time.Dura
 func queueCallback(t *testing.T, g *TelegramGate, ft *fakeTelegram, updateID int64, userID, chatID int64, cb callbackData) {
 	t.Helper()
 	if cb.Token == "" {
+		g.mu.RLock()
+		pending, ok := g.pendingRequests[cb.DeviceUUID]
+		g.mu.RUnlock()
+		if ok && time.Since(time.Unix(cb.Timestamp, 0)) < g.cfg.approvalTTL {
+			cb.Timestamp = pending.createdAt.UnixNano()
+		}
 		cb.Token = g.signCallbackData(cb)
-	}
-	payload, err := json.Marshal(cb)
-	if err != nil {
-		t.Fatalf("marshaling callback: %v", err)
 	}
 	ft.queueUpdate(map[string]any{
 		"update_id": updateID,
@@ -174,7 +179,7 @@ func queueCallback(t *testing.T, g *TelegramGate, ft *fakeTelegram, updateID int
 			"message": map[string]any{
 				"chat": map[string]any{"id": chatID},
 			},
-			"data": base64.RawURLEncoding.EncodeToString(payload),
+			"data": g.encodeCallbackData(cb),
 		},
 	})
 }

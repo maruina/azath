@@ -11,6 +11,8 @@ This runbook walks through deploying two azath servers — one on your local LAN
 - A raw 32-byte master key file.
 - The 1Password CLI (`op`) and a service account token.
 
+Install azath on both servers with Step 1 before creating files under `/etc/azath`. Run the setup commands as root.
+
 ### 1Password service account
 
 azath resolves secrets from 1Password via `op://` references. The systemd unit loads the token from `EnvironmentFile=/etc/azath/onepassword.env` (see `deploy/systemd/azath.service`).
@@ -36,11 +38,13 @@ azath resolves secrets from 1Password via `op://` references. The systemd unit l
 ### Generate master key
 
 ```bash
+umask 077
 dd if=/dev/urandom of=/etc/azath/master.key bs=32 count=1
+chown azath:azath /etc/azath/master.key
 chmod 0600 /etc/azath/master.key
 ```
 
-Copy this file to both servers. It must be identical on LAN and VPS.
+Generate the key once and copy it to the other server. It must be identical on LAN and VPS. Set ownership to `azath:azath` and mode `0600` on both copies. Do not regenerate a key after creating sealed blobs; keep an offline recovery copy.
 
 ## Step 1: Install azath
 
@@ -211,6 +215,17 @@ See `deploy/systemd/azath.service` for a production systemd unit. The service mu
 The unit fails to start if `/etc/azath/onepassword.env` is missing.
 
 ## Step 5: Start services and verify `op` auth
+Before starting the service, set server config ownership and check access on each host:
+
+```sh
+chown azath:azath /etc/azath/server.yaml
+chmod 0600 /etc/azath/server.yaml
+runuser -u azath -- test -r /etc/azath/server.yaml
+runuser -u azath -- test -r /etc/azath/master.key
+runuser -u azath -- test -w /etc/azath
+```
+
+Keep `/etc/azath/onepassword.env` root-owned with mode `0600`; systemd reads it before starting the service. If restoring an existing registry, make it readable and writable by `azath`.
 
 On both servers:
 

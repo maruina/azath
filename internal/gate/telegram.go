@@ -7,15 +7,18 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/maruina/azath/internal/crypto"
 )
@@ -47,7 +50,7 @@ func WithAPIBase(base string) Option {
 type callbackData struct {
 	DeviceUUID string `json:"uuid"`
 	Action     string `json:"action"` // "approve" or "deny"
-	Timestamp  int64  `json:"ts"`     // Unix timestamp when created
+	Timestamp  int64  `json:"ts"`     // Unix nanoseconds; identifies one pending request
 	Token      string `json:"token"`  // HMAC signature to prevent tampering
 }
 
@@ -76,8 +79,11 @@ type TelegramGate struct {
 	httpClient *http.Client
 
 	// shutdown signals the polling goroutine to stop.
-	shutdown context.CancelFunc
-	wg       sync.WaitGroup
+	shutdown  context.CancelFunc
+	sendCtx   context.Context
+	closed    bool
+	closeOnce sync.Once
+	wg        sync.WaitGroup
 
 	// lastUpdateID tracks the highest update_id processed to avoid re-processing.
 	lastUpdateID int64
@@ -158,6 +164,7 @@ func NewTelegramGate(
 			Timeout: 30 * time.Second,
 		},
 		shutdown: cancel,
+		sendCtx:  ctx,
 		logger:   logger,
 		apiBase:  telegramAPIBase,
 	}
@@ -183,7 +190,11 @@ func (g *TelegramGate) Check(ctx context.Context, device Device) (Decision, erro
 	if g.cfg.approvalCacheTTL > 0 {
 		g.mu.RLock()
 		entry, cached := g.approvedCache[uuid]
+		closed := g.closed
 		g.mu.RUnlock()
+		if closed {
+			return Denied, nil
+		}
 
 		if cached && time.Now().Before(entry.expiresAt) {
 			return Approved, nil
@@ -192,6 +203,9 @@ func (g *TelegramGate) Check(ctx context.Context, device Device) (Decision, erro
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.closed {
+		return Denied, nil
+	}
 
 	// Expire pending requests older than the approval TTL. Without this, an
 	// ignored prompt would keep denying the device forever (no new prompt is
@@ -209,18 +223,19 @@ func (g *TelegramGate) Check(ctx context.Context, device Device) (Decision, erro
 		createdAt: time.Now(),
 	}
 
-	// Send approval message asynchronously so we don't block the Unseal RPC.
-	// The approval will be received via the polling loop and matched by UUID.
-	// #nosec G118 — deliberate: the request context is cancelled when Check
-	// returns, but the send and its cleanup must complete.
+	pending := g.pendingRequests[uuid]
+	g.wg.Add(1)
 	go func() {
-		if err := g.sendApprovalMessage(device); err != nil {
+		defer g.wg.Done()
+		if err := g.sendApprovalMessage(device, pending.createdAt); err != nil {
 			// A silent failure here would leave the operator waiting for a
 			// prompt that never arrives.
-			g.logger.ErrorContext(context.Background(), "gate: sending approval message failed",
+			g.logger.ErrorContext(g.sendCtx, "gate: sending approval message failed",
 				"device_uuid", device.UUID, "error", err)
 			g.mu.Lock()
-			delete(g.pendingRequests, uuid)
+			if current, ok := g.pendingRequests[uuid]; ok && current.createdAt.Equal(pending.createdAt) {
+				delete(g.pendingRequests, uuid)
+			}
 			g.mu.Unlock()
 		}
 	}()
@@ -230,16 +245,19 @@ func (g *TelegramGate) Check(ctx context.Context, device Device) (Decision, erro
 
 // Close shuts down the Telegram gate and zeros sensitive material.
 func (g *TelegramGate) Close() error {
-	g.shutdown()
-	g.wg.Wait()
-
-	crypto.Zero(g.cfg.botToken)
-	crypto.Zero(g.hmacKey)
-
-	g.mu.Lock()
-	clear(g.pendingRequests)
-	clear(g.approvedCache)
-	g.mu.Unlock()
+	g.closeOnce.Do(func() {
+		g.mu.Lock()
+		g.closed = true
+		g.shutdown()
+		g.mu.Unlock()
+		g.wg.Wait()
+		crypto.Zero(g.cfg.botToken)
+		crypto.Zero(g.hmacKey)
+		g.mu.Lock()
+		clear(g.pendingRequests)
+		clear(g.approvedCache)
+		g.mu.Unlock()
+	})
 
 	return nil
 }
@@ -257,8 +275,8 @@ func (g *TelegramGate) purgeExpiredPendingLocked(now time.Time) {
 }
 
 // sendApprovalMessage sends a Telegram message with inline keyboard buttons.
-func (g *TelegramGate) sendApprovalMessage(device Device) error {
-	now := time.Now().Unix()
+func (g *TelegramGate) sendApprovalMessage(device Device, createdAt time.Time) error {
+	now := createdAt.UnixNano()
 
 	// Build callback data for approve button.
 	approveData := callbackData{
@@ -315,25 +333,23 @@ func (g *TelegramGate) sendApprovalMessage(device Device) error {
 	}
 
 	url := fmt.Sprintf("%s/bot%s/sendMessage", g.apiBase, string(g.cfg.botToken))
-	req, err := http.NewRequestWithContext(context.Background(), "POST", url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(g.sendCtx, "POST", url, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
+		return errors.New("creating sendMessage request failed")
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("sending message: %w", err)
+		return telegramTransportError("sending message", err)
 	}
 	defer func() {
 		_ = resp.Body.Close()
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("telegram API error %d: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("telegram API error %d", resp.StatusCode)
 	}
-
 	return nil
 }
 
@@ -376,22 +392,20 @@ func (g *TelegramGate) getUpdates(ctx context.Context) error {
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
+		return errors.New("creating getUpdates request failed")
 	}
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("fetching updates: %w", err)
+		return telegramTransportError("fetching updates", err)
 	}
 	defer func() {
 		_ = resp.Body.Close()
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("telegram API error %d: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("telegram API error %d", resp.StatusCode)
 	}
-
 	var result struct {
 		OK     bool `json:"ok"`
 		Result []struct {
@@ -486,7 +500,7 @@ func (g *TelegramGate) processCallback(data callbackData) {
 
 	// Remove pending request.
 	pending, exists := g.pendingRequests[uuid]
-	if !exists {
+	if !exists || pending.createdAt.UnixNano() != data.Timestamp || time.Since(pending.createdAt) > g.cfg.approvalTTL {
 		// Stale or duplicate callback — ignore.
 		return
 	}
@@ -516,42 +530,74 @@ func (g *TelegramGate) signCallbackData(data callbackData) string {
 	payload := fmt.Sprintf("%s:%s:%d", data.DeviceUUID, data.Action, data.Timestamp)
 	mac := hmac.New(sha256.New, g.hmacKey)
 	mac.Write([]byte(payload))
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:16])
 }
 
-// encodeCallbackData serializes and signs callback data.
+// encodeCallbackData uses 41 bytes (55 base64 characters), below Telegram's 64-byte limit.
 func (g *TelegramGate) encodeCallbackData(data callbackData) string {
-	jsonBytes, err := json.Marshal(data)
+	id, err := uuid.Parse(data.DeviceUUID)
 	if err != nil {
-		// This should never happen with our simple struct.
 		return ""
 	}
-	return base64.RawURLEncoding.EncodeToString(jsonBytes)
+	raw := make([]byte, 41)
+	copy(raw, id[:])
+	_, _ = binary.Encode(raw[16:24], binary.BigEndian, data.Timestamp)
+	switch data.Action {
+	case "approve":
+		raw[24] = 1
+	case "deny":
+		raw[24] = 2
+	default:
+		return ""
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(data.Token)
+	if err != nil || len(signature) != 16 {
+		return ""
+	}
+	copy(raw[25:], signature)
+	return base64.RawURLEncoding.EncodeToString(raw)
 }
 
-// decodeCallbackData deserializes and verifies callback data.
 func (g *TelegramGate) decodeCallbackData(encoded string) (callbackData, error) {
 	var data callbackData
-
-	jsonBytes, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil {
-		return data, fmt.Errorf("decoding base64: %w", err)
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(raw) != 41 {
+		return data, errors.New("invalid callback")
 	}
-
-	if err := json.Unmarshal(jsonBytes, &data); err != nil {
-		return data, fmt.Errorf("unmarshaling JSON: %w", err)
+	id, _ := uuid.FromBytes(raw[:16])
+	data.DeviceUUID = id.String()
+	_, _ = binary.Decode(raw[16:24], binary.BigEndian, &data.Timestamp)
+	switch raw[24] {
+	case 1:
+		data.Action = "approve"
+	case 2:
+		data.Action = "deny"
+	default:
+		return data, errors.New("invalid action")
 	}
-
-	// Verify signature.
-	expectedSig := g.signCallbackData(data)
-	if !hmac.Equal([]byte(data.Token), []byte(expectedSig)) {
+	data.Token = base64.RawURLEncoding.EncodeToString(raw[25:])
+	if !hmac.Equal([]byte(data.Token), []byte(g.signCallbackData(data))) {
 		return data, errors.New("invalid signature")
 	}
-
-	// Check timestamp is within approval TTL.
-	if time.Since(time.Unix(data.Timestamp, 0)) > g.cfg.approvalTTL {
+	created := time.Unix(0, data.Timestamp)
+	if created.After(time.Now()) || time.Since(created) > g.cfg.approvalTTL {
 		return data, errors.New("callback expired")
 	}
-
 	return data, nil
+}
+
+func telegramTransportError(operation string, err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		err = urlErr.Err
+	}
+	// deliberate: omit arbitrary transport text because it can contain credential-bearing URLs.
+	// Add allowlisted error categories if finer diagnostics are needed.
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("%s: %w", operation, context.Canceled)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%s: %w", operation, context.DeadlineExceeded)
+	}
+	return fmt.Errorf("%s: transport failure", operation)
 }

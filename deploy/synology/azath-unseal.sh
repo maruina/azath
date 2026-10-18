@@ -33,8 +33,9 @@ unseal_share() {
         -- /usr/syno/sbin/synoshare --enc_mount "$share"; then
       echo "[$(date -Iseconds)] ${share}: unsealed."
       return 0
+    else
+      rc=$?
     fi
-    rc=$?
     echo "[$(date -Iseconds)] ${share}: attempt ${attempt}/${ATTEMPTS} failed (exit ${rc})."
     if [ "$attempt" -lt "$ATTEMPTS" ]; then
       sleep "$SLEEP_SECONDS"
@@ -45,9 +46,11 @@ unseal_share() {
   return 1
 }
 
-unseal_share homes
+status=0
+unseal_share homes || status=1
 # Add more shares:
-# unseal_share documents
-# unseal_share photos
+# unseal_share documents || status=1
+# unseal_share photos || status=1
 
-echo "[$(date -Iseconds)] Azath unseal complete."
+echo "[$(date -Iseconds)] Azath unseal complete (exit ${status})."
+exit "$status"

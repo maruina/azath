@@ -134,7 +134,11 @@ func tryUnseal(ctx context.Context, endpoint string, deviceUUID string, sealedBy
 	defer cancel()
 
 	dialOpts := buildDialOptions(insecureDev)
-	conn, err := grpc.NewClient(endpoint, dialOpts...)
+	target, err := endpointTarget(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := grpc.NewClient(target, dialOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("creating gRPC client for %s: %w", endpoint, err)
 	}
