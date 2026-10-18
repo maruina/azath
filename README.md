@@ -13,8 +13,8 @@ azath is a small gRPC KMS that implements the [Talos KMS protocol](https://www.t
 | `azath serve` | gRPC `Seal`/`Unseal` server for the Talos KMS protocol | implemented |
 | `azath config validate <path>` | Validate server config | implemented |
 | `azath config new-device --name <name> --config <path>` | Append a configured device and print its generated UUID | implemented |
-| `azath seal` | Seal one secret against an azath endpoint | planned |
-| `azath client` | Unseal one sealed blob and run one command | planned |
+| `azath seal` | Seal one secret against an azath endpoint | implemented |
+| `azath client` | Unseal one sealed blob and run one command | implemented |
 
 For the threat model, shared-state requirements, and server/client model, see [docs/architecture/mvp.md](docs/architecture/mvp.md).
 
