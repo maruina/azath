@@ -20,7 +20,6 @@ import (
 	"github.com/maruina/azath/internal/gate"
 	"github.com/maruina/azath/internal/keymanager"
 	"github.com/maruina/azath/internal/observability"
-	"github.com/maruina/azath/internal/registry"
 	"github.com/maruina/azath/internal/server"
 )
 
@@ -36,7 +35,7 @@ func withLogger(l *slog.Logger) loggerOpt { return loggerOpt{l} }
 func newTestServerWithGRPC(
 	t *testing.T,
 	km *keymanager.Manager,
-	reg *registry.Registry,
+
 	m *observability.Metrics,
 	testOpts ...any,
 ) (*server.KMSServer, kms.KMSServiceClient) {
@@ -56,7 +55,7 @@ func newTestServerWithGRPC(
 		}
 	}
 
-	srv := server.New(km, reg, m, serverOpts...)
+	srv := server.New(km, m, serverOpts...)
 	gs, _ := server.NewGRPCServer(srv, logger)
 
 	lis := bufconn.Listen(bufSize)
@@ -111,10 +110,9 @@ func TestNewGRPCServer_HealthCheck_Serving(t *testing.T) {
 	t.Parallel()
 
 	m := newTestMetrics(t)
-	reg := newTestRegistry(t, m)
 	mgr := newUnloadedManager(t, m)
 
-	srv := server.New(mgr, reg, m, server.WithSealToken([]byte(testSealToken)))
+	srv := server.New(mgr, m, server.WithSealToken([]byte(testSealToken)))
 	gs, _ := server.NewGRPCServer(srv, nil)
 
 	lis := bufconn.Listen(bufSize)
@@ -143,14 +141,13 @@ func TestNewGRPCServer_MaxRecvMsgSize_Enforced(t *testing.T) {
 	t.Parallel()
 
 	m := newTestMetrics(t)
-	reg := newTestRegistry(t, m)
 	mgr := newUnloadedManager(t, m)
 	nodeUUID := uuid.New().String()
 	devices := map[string]server.DeviceInfo{
 		nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: false},
 	}
 
-	_, client := newTestServerWithGRPC(t, mgr, reg, m, server.WithDevices(devices))
+	_, client := newTestServerWithGRPC(t, mgr, m, server.WithDevices(devices))
 
 	oversized := make([]byte, (1<<20)+1)
 	_, err := client.Seal(ctxWithBearer(t.Context(), testSealToken), &kms.Request{
@@ -170,24 +167,20 @@ func TestNewGRPCServer_PanicRecovery(t *testing.T) {
 	t.Parallel()
 
 	m := newTestMetrics(t)
-	reg := newTestRegistry(t, m)
 	mgr := newLoadedManager(t, testKey(), m)
 
 	nodeUUID := uuid.New().String()
 	devices := map[string]server.DeviceInfo{
 		nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: false},
 	}
-	if err := reg.Register(nodeUUID, nodeUUID); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
 
-	_, client := newTestServerWithGRPC(t, mgr, reg, m,
+	_, client := newTestServerWithGRPC(t, mgr, m,
 		server.WithDevices(devices),
 		server.WithGate(&panickingGate{}),
 	)
 
 	// Seal so we have a valid blob.
-	sealed := sealOne(t, t.Context(), client, nodeUUID, bytes.Repeat([]byte{1}, 32))
+	sealed := sealOne(t, t.Context(), client, nodeUUID, bytes.Repeat([]byte{1}, 47))
 
 	// Unseal triggers the gate which panics. The oracle contract requires
 	// codes.OK + random bytes — a panic must not produce a distinguishable error.
@@ -198,8 +191,8 @@ func TestNewGRPCServer_PanicRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unseal after gate panic returned error, want codes.OK: %v", err)
 	}
-	if len(resp.Data) == 0 {
-		t.Error("Unseal after gate panic returned empty data, want oracle-safe random bytes")
+	if len(resp.Data) != 47 {
+		t.Error("Unseal after gate panic returned wrong size, want 47 bytes")
 	}
 
 	// Server must still be alive — do another Seal successfully.
@@ -216,7 +209,6 @@ func TestNewGRPCServer_LoggingInterceptor(t *testing.T) {
 	}
 
 	m := newTestMetrics(t)
-	reg := newTestRegistry(t, m)
 	mgr := newLoadedManager(t, testKey(), m)
 
 	nodeUUID := uuid.New().String()
@@ -224,7 +216,7 @@ func TestNewGRPCServer_LoggingInterceptor(t *testing.T) {
 		nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: false},
 	}
 
-	_, client := newTestServerWithGRPC(t, mgr, reg, m,
+	_, client := newTestServerWithGRPC(t, mgr, m,
 		withLogger(logger),
 		server.WithDevices(devices),
 	)

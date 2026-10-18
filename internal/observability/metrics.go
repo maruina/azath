@@ -12,7 +12,7 @@ type Metrics struct {
 	SealTotal prometheus.Counter
 	// UnsealTotal counts Unseal RPC outcomes, labelled by reason.
 	// reason values: ok, unknown_uuid, disabled, master_key_not_loaded,
-	// gate_denied, gate_pending, decrypt_error, wrong_instance.
+	// gate_denied, decrypt_error, wrong_instance.
 	UnsealTotal *prometheus.CounterVec
 	// SealDuration observes Seal RPC latency in seconds.
 	SealDuration prometheus.Histogram
@@ -21,14 +21,8 @@ type Metrics struct {
 	// MasterKeyLoaded is 1 when the master key is in memory, 0 otherwise.
 	MasterKeyLoaded prometheus.Gauge
 	// GateApprovals counts gate decisions, labelled by gate name and result.
-	// result values: approved, denied, pending, error.
+	// result values: approved, denied, error.
 	GateApprovals *prometheus.CounterVec
-	// RegistrySize tracks the number of devices in the registry.
-	RegistrySize prometheus.Gauge
-	// NotificationFailures counts notification send failures by provider.
-	NotificationFailures *prometheus.CounterVec
-	// RegistryLoadErrors counts failures to load or verify the device registry.
-	RegistryLoadErrors prometheus.Counter
 	// GateAPIErrors counts external API errors per gate.
 	GateAPIErrors *prometheus.CounterVec
 }
@@ -69,18 +63,6 @@ func NewMetrics() *Metrics {
 			Name: "azath_gate_approvals_total",
 			Help: "Total gate decisions by gate name and result.",
 		}, []string{"gate", "result"}),
-		RegistrySize: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "azath_registry_size",
-			Help: "Number of devices in the registry.",
-		}),
-		NotificationFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "azath_notification_failures_total",
-			Help: "Total notification send failures by provider.",
-		}, []string{"provider"}),
-		RegistryLoadErrors: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "azath_registry_load_errors_total",
-			Help: "Total failures to load or verify the device registry.",
-		}),
 		GateAPIErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "azath_gate_api_errors_total",
 			Help: "Total external API errors per gate.",
@@ -94,9 +76,6 @@ func NewMetrics() *Metrics {
 		m.UnsealDuration,
 		m.MasterKeyLoaded,
 		m.GateApprovals,
-		m.RegistrySize,
-		m.NotificationFailures,
-		m.RegistryLoadErrors,
 		m.GateAPIErrors,
 	)
 

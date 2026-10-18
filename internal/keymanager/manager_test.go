@@ -7,7 +7,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/maruina/azath/internal/crypto"
 	"github.com/maruina/azath/internal/keymanager"
 	"github.com/maruina/azath/internal/observability"
 )
@@ -81,9 +80,6 @@ func TestNew_InitialState(t *testing.T) {
 	}
 	if _, err := mgr.Sealer(); !errors.Is(err, keymanager.ErrNotLoaded) {
 		t.Errorf("Sealer() error = %v, want ErrNotLoaded", err)
-	}
-	if _, err := mgr.DeriveKey("test", 32); !errors.Is(err, keymanager.ErrNotLoaded) {
-		t.Errorf("DeriveKey() error = %v, want ErrNotLoaded", err)
 	}
 	// Gauge must be 0 before load.
 	if v := masterKeyLoadedValue(t, m); v != 0 {
@@ -316,115 +312,6 @@ func TestSealer_MultipleCrossUnseal(t *testing.T) {
 	}
 }
 
-// --- DeriveKey tests ---
-
-func TestDeriveKey_Deterministic(t *testing.T) {
-	t.Parallel()
-	m := newTestMetrics(t)
-	mgr := mustLoad(t, m, testFileSource(t))
-
-	first, err := mgr.DeriveKey("azath-test-v1", 32)
-	if err != nil {
-		t.Fatalf("DeriveKey (first): %v", err)
-	}
-	defer crypto.Zero(first)
-	second, err := mgr.DeriveKey("azath-test-v1", 32)
-	if err != nil {
-		t.Fatalf("DeriveKey (second): %v", err)
-	}
-	defer crypto.Zero(second)
-	if !bytes.Equal(first, second) {
-		t.Errorf("DeriveKey not deterministic:\n got: %x\nwant: %x", second, first)
-	}
-}
-
-func TestDeriveKey_DifferentInfoDifferentOutput(t *testing.T) {
-	t.Parallel()
-	m := newTestMetrics(t)
-	mgr := mustLoad(t, m, testFileSource(t))
-
-	keyA, err := mgr.DeriveKey("info-a", 32)
-	if err != nil {
-		t.Fatalf("DeriveKey (info-a): %v", err)
-	}
-	defer crypto.Zero(keyA)
-	keyB, err := mgr.DeriveKey("info-b", 32)
-	if err != nil {
-		t.Fatalf("DeriveKey (info-b): %v", err)
-	}
-	defer crypto.Zero(keyB)
-	if bytes.Equal(keyA, keyB) {
-		t.Error("DeriveKey with different info strings produced identical output")
-	}
-}
-
-func TestDeriveKey_InvalidLength(t *testing.T) {
-	t.Parallel()
-	m := newTestMetrics(t)
-	mgr := mustLoad(t, m, testFileSource(t))
-	cases := []struct {
-		name   string
-		length int
-	}{
-		{"zero", 0},
-		{"negative one", -1},
-		{"large negative", -32},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			_, err := mgr.DeriveKey("azath-test", tc.length)
-			if err == nil {
-				t.Errorf("DeriveKey(length=%d) returned nil, want error", tc.length)
-			}
-		})
-	}
-}
-
-func TestDeriveKey_NotLoaded(t *testing.T) {
-	t.Parallel()
-	mgr := keymanager.New(newTestMetrics(t), nil)
-	_, err := mgr.DeriveKey("test", 32)
-	if !errors.Is(err, keymanager.ErrNotLoaded) {
-		t.Errorf("DeriveKey() error = %v, want ErrNotLoaded", err)
-	}
-}
-
-func TestDeriveKey_AfterDestroy(t *testing.T) {
-	t.Parallel()
-	m := newTestMetrics(t)
-	mgr := mustLoad(t, m, testFileSource(t))
-	mgr.Destroy()
-	_, err := mgr.DeriveKey("test", 32)
-	if !errors.Is(err, keymanager.ErrDestroyed) {
-		t.Errorf("DeriveKey() after Destroy error = %v, want ErrDestroyed", err)
-	}
-}
-
-func TestDeriveKey_LengthVariation(t *testing.T) {
-	t.Parallel()
-	m := newTestMetrics(t)
-	mgr := mustLoad(t, m, testFileSource(t))
-
-	full, err := mgr.DeriveKey("azath-hmac-v1", 32)
-	if err != nil {
-		t.Fatalf("DeriveKey(32): %v", err)
-	}
-	defer crypto.Zero(full)
-	half, err := mgr.DeriveKey("azath-hmac-v1", 16)
-	if err != nil {
-		t.Fatalf("DeriveKey(16): %v", err)
-	}
-	defer crypto.Zero(half)
-	// HKDF is a stream: the first 16 bytes of a 32-byte derivation equal the
-	// output of a 16-byte derivation with the same key + info.
-	if !bytes.Equal(half, full[:len(half)]) {
-		t.Errorf("DeriveKey(16) = %x, want first 16 bytes of DeriveKey(32) = %x", half, full[:len(half)])
-	}
-}
-
-// --- Destroy tests ---
-
 func TestDestroy_ZerosKey(t *testing.T) {
 	t.Parallel()
 	m := newTestMetrics(t)
@@ -504,37 +391,6 @@ func TestConcurrent_SealerAndDestroy(t *testing.T) {
 				return
 			}
 			_, _ = s.Seal([]byte("test"), nil)
-		}()
-	}
-	close(ready)
-	wg.Wait()
-}
-
-func TestConcurrent_DeriveKeyAndDestroy(t *testing.T) {
-	t.Parallel()
-	m := newTestMetrics(t)
-	mgr := mustLoad(t, m, testFileSource(t))
-
-	const goroutines = 100
-	var wg sync.WaitGroup
-	wg.Add(goroutines + 1)
-	ready := make(chan struct{})
-
-	go func() {
-		defer wg.Done()
-		<-ready
-		mgr.Destroy()
-	}()
-
-	for range goroutines {
-		go func() {
-			defer wg.Done()
-			<-ready
-			key, err := mgr.DeriveKey("azath-hmac-v1", 32)
-			if err != nil {
-				return
-			}
-			crypto.Zero(key)
 		}()
 	}
 	close(ready)

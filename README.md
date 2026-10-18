@@ -14,7 +14,9 @@ azath is a small gRPC KMS that implements the [Talos KMS protocol](https://www.t
 | `azath config validate <path>` | Validate server config | implemented |
 | `azath config new-device --name <name> --config <path>` | Append a configured device and print its generated UUID | implemented |
 | `azath seal` | Seal one secret against an azath endpoint | implemented |
-| `azath client` | Unseal one sealed blob and run one command | implemented |
+| `azath synology` | Unlock configured Synology shares sequentially | implemented |
+
+For Synology, one `azath synology` invocation unlocks all configured shares sequentially. A device-scoped approval window can cover all shares. A failed share does not stop later shares; partial failure returns nonzero. `seal` and `synology` use the same client config.
 
 For the threat model, shared-state requirements, and server/client model, see [docs/architecture/mvp.md](docs/architecture/mvp.md).
 

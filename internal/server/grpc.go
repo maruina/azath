@@ -5,22 +5,9 @@ import (
 
 	kms "github.com/siderolabs/kms-client/api/kms"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/encoding"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
-
-	"github.com/maruina/azath/internal/gate"
-)
-
-// Gate is an alias for gate.Gate for backward compatibility.
-type Gate = gate.Gate
-
-// GateResult is an alias for gate.Decision for backward compatibility.
-type GateResult = gate.Decision
-
-const (
-	GateDenied   = gate.Denied
-	GateApproved = gate.Approved
-	GatePending  = gate.Pending
 )
 
 // NewGRPCServer creates a grpc.Server with the KMS service and health service
@@ -47,6 +34,7 @@ func NewGRPCServer(srv *KMSServer, logger *slog.Logger, extraOpts ...grpc.Server
 
 	opts := []grpc.ServerOption{
 		grpc.MaxRecvMsgSize(1 << 20),
+		grpc.ForceServerCodecV2(responseCodec{CodecV2: encoding.GetCodecV2("proto")}),
 		chainOpt,
 	}
 	opts = append(opts, extraOpts...)

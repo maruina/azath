@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -58,6 +59,24 @@ type callbackData struct {
 type pendingRequest struct {
 	device    Device
 	createdAt time.Time
+	done      chan struct{}
+	decision  Decision
+	waiters   int
+	cancel    context.CancelFunc
+}
+
+// deliberate: fixed homelab limits; make these configurable if larger fleets need them.
+const (
+	maxPendingRequests  = 64
+	maxWaitersPerDevice = 32
+	maxConcurrentSends  = 8
+	maxTrackedDevices   = 1024
+)
+
+// WithPromptRateLimit sets the minimum interval between prompts for one device.
+// Zero disables the interval; concurrency and retained-state limits still apply.
+func WithPromptRateLimit(interval time.Duration) Option {
+	return func(g *TelegramGate) { g.promptInterval = interval }
 }
 
 // approvedCacheEntry tracks an approved device with its expiry time.
@@ -71,7 +90,10 @@ type TelegramGate struct {
 	cfg telegramGateConfig
 
 	mu              sync.RWMutex
-	pendingRequests map[string]pendingRequest // keyed by canonical UUID
+	pendingRequests map[string]*pendingRequest // keyed by canonical UUID
+	lastPrompt      map[string]time.Time
+	promptInterval  time.Duration
+	sends           chan struct{}
 	approvedCache   map[string]approvedCacheEntry
 
 	hmacKey []byte // for signing callback data; zeroed on Close
@@ -157,11 +179,14 @@ func NewTelegramGate(
 			approvalTTL:      approvalTTL,
 			approvalCacheTTL: approvalCacheTTL,
 		},
-		pendingRequests: make(map[string]pendingRequest),
+		pendingRequests: make(map[string]*pendingRequest),
+		lastPrompt:      make(map[string]time.Time),
+		promptInterval:  5 * time.Minute,
+		sends:           make(chan struct{}, maxConcurrentSends),
 		approvedCache:   make(map[string]approvedCacheEntry),
 		hmacKey:         hmacKey,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 40 * time.Second,
 		},
 		shutdown: cancel,
 		sendCtx:  ctx,
@@ -182,65 +207,87 @@ func NewTelegramGate(
 	return g, nil
 }
 
-// Check implements Gate.Check.
+// Check waits for device approval, cancellation, or the approval deadline.
+// Concurrent requests for one device share a prompt, but cancel independently.
 func (g *TelegramGate) Check(ctx context.Context, device Device) (Decision, error) {
+	id, err := uuid.Parse(device.UUID)
+	if err != nil {
+		return Denied, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return Denied, fmt.Errorf("waiting for approval: %w", err)
+	}
+	device.UUID = id.String()
+	return g.waitForApproval(ctx, device)
+}
+
+func (g *TelegramGate) waitForApproval(ctx context.Context, device Device) (Decision, error) {
 	uuid := device.UUID
 
-	// Check approval cache first (if enabled).
-	if g.cfg.approvalCacheTTL > 0 {
-		g.mu.RLock()
-		entry, cached := g.approvedCache[uuid]
-		closed := g.closed
-		g.mu.RUnlock()
-		if closed {
-			return Denied, nil
-		}
-
-		if cached && time.Now().Before(entry.expiresAt) {
-			return Approved, nil
+	g.mu.Lock()
+	if g.closed || g.sendCtx == nil {
+		g.mu.Unlock()
+		return Denied, nil
+	}
+	now := time.Now()
+	for id, entry := range g.approvedCache {
+		if !now.Before(entry.expiresAt) {
+			delete(g.approvedCache, id)
 		}
 	}
-
+	for id, sent := range g.lastPrompt {
+		if now.Sub(sent) >= g.promptInterval {
+			delete(g.lastPrompt, id)
+		}
+	}
+	if _, ok := g.approvedCache[uuid]; ok && ctx.Err() == nil {
+		g.mu.Unlock()
+		return Approved, nil
+	}
+	pending := g.pendingRequests[uuid]
+	if pending == nil {
+		if _, limited := g.lastPrompt[uuid]; limited || len(g.pendingRequests) >= maxPendingRequests || len(g.lastPrompt) >= maxTrackedDevices || len(g.approvedCache) >= maxTrackedDevices {
+			g.mu.Unlock()
+			return Denied, nil
+		}
+		select {
+		case g.sends <- struct{}{}:
+		default:
+			g.mu.Unlock()
+			return Denied, nil
+		}
+		sendCtx, cancel := context.WithTimeout(g.sendCtx, g.cfg.approvalTTL)
+		pending = &pendingRequest{device: device, createdAt: now, done: make(chan struct{}), cancel: cancel}
+		g.pendingRequests[uuid] = pending
+		g.lastPrompt[uuid] = now
+		g.wg.Add(1)
+		go g.runPending(sendCtx, pending)
+	}
+	if pending.waiters >= maxWaitersPerDevice {
+		g.mu.Unlock()
+		return Denied, nil
+	}
+	pending.waiters++
+	g.wg.Add(1)
+	g.mu.Unlock()
+	defer g.wg.Done()
+	select {
+	case <-ctx.Done():
+	case <-pending.done:
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	pending.waiters--
+	if pending.waiters == 0 {
+		g.finishPendingLocked(pending, Denied)
+	}
+	if err := ctx.Err(); err != nil {
+		return Denied, fmt.Errorf("waiting for approval: %w", err)
+	}
 	if g.closed {
 		return Denied, nil
 	}
-
-	// Expire pending requests older than the approval TTL. Without this, an
-	// ignored prompt would keep denying the device forever (no new prompt is
-	// sent while a pending entry exists) until restart.
-	g.purgeExpiredPendingLocked(time.Now())
-
-	// If there's already a pending request for this UUID, deny immediately.
-	if _, exists := g.pendingRequests[uuid]; exists {
-		return Denied, nil
-	}
-
-	// Create pending request.
-	g.pendingRequests[uuid] = pendingRequest{
-		device:    device,
-		createdAt: time.Now(),
-	}
-
-	pending := g.pendingRequests[uuid]
-	g.wg.Add(1)
-	go func() {
-		defer g.wg.Done()
-		if err := g.sendApprovalMessage(device, pending.createdAt); err != nil {
-			// A silent failure here would leave the operator waiting for a
-			// prompt that never arrives.
-			g.logger.ErrorContext(g.sendCtx, "gate: sending approval message failed",
-				"device_uuid", device.UUID, "error", err)
-			g.mu.Lock()
-			if current, ok := g.pendingRequests[uuid]; ok && current.createdAt.Equal(pending.createdAt) {
-				delete(g.pendingRequests, uuid)
-			}
-			g.mu.Unlock()
-		}
-	}()
-
-	return Pending, nil
+	return pending.decision, nil
 }
 
 // Close shuts down the Telegram gate and zeros sensitive material.
@@ -248,7 +295,12 @@ func (g *TelegramGate) Close() error {
 	g.closeOnce.Do(func() {
 		g.mu.Lock()
 		g.closed = true
-		g.shutdown()
+		if g.shutdown != nil {
+			g.shutdown()
+		}
+		for _, pending := range g.pendingRequests {
+			g.finishPendingLocked(pending, Denied)
+		}
 		g.mu.Unlock()
 		g.wg.Wait()
 		crypto.Zero(g.cfg.botToken)
@@ -256,26 +308,39 @@ func (g *TelegramGate) Close() error {
 		g.mu.Lock()
 		clear(g.pendingRequests)
 		clear(g.approvedCache)
+		clear(g.lastPrompt)
 		g.mu.Unlock()
 	})
 
 	return nil
 }
 
-// purgeExpiredPendingLocked deletes pending requests older than the approval
-// TTL so a fresh prompt is sent on the next Check. Caller must hold g.mu.
-func (g *TelegramGate) purgeExpiredPendingLocked(now time.Time) {
-	for uuid, req := range g.pendingRequests {
-		if now.Sub(req.createdAt) > g.cfg.approvalTTL {
-			delete(g.pendingRequests, uuid)
-			g.logger.InfoContext(context.Background(), "gate: pending approval expired",
-				"device_uuid", uuid)
-		}
+func (g *TelegramGate) finishPendingLocked(pending *pendingRequest, decision Decision) {
+	if g.pendingRequests[pending.device.UUID] != pending {
+		return
 	}
+	delete(g.pendingRequests, pending.device.UUID)
+	pending.decision = decision
+	pending.cancel()
+	close(pending.done)
+}
+
+func (g *TelegramGate) runPending(ctx context.Context, pending *pendingRequest) {
+	defer g.wg.Done()
+	err := g.sendApprovalMessage(ctx, pending.device, pending.createdAt)
+	<-g.sends
+	if err != nil {
+		g.logger.ErrorContext(ctx, "gate: sending approval message failed", "device_uuid", pending.device.UUID, "error", err)
+	} else {
+		<-ctx.Done()
+	}
+	g.mu.Lock()
+	g.finishPendingLocked(pending, Denied)
+	g.mu.Unlock()
 }
 
 // sendApprovalMessage sends a Telegram message with inline keyboard buttons.
-func (g *TelegramGate) sendApprovalMessage(device Device, createdAt time.Time) error {
+func (g *TelegramGate) sendApprovalMessage(ctx context.Context, device Device, createdAt time.Time) error {
 	now := createdAt.UnixNano()
 
 	// Build callback data for approve button.
@@ -333,7 +398,7 @@ func (g *TelegramGate) sendApprovalMessage(device Device, createdAt time.Time) e
 	}
 
 	url := fmt.Sprintf("%s/bot%s/sendMessage", g.apiBase, string(g.cfg.botToken))
-	req, err := http.NewRequestWithContext(g.sendCtx, "POST", url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return errors.New("creating sendMessage request failed")
 	}
@@ -349,6 +414,15 @@ func (g *TelegramGate) sendApprovalMessage(device Device, createdAt time.Time) e
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("telegram API error %d", resp.StatusCode)
+	}
+	var result struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&result); err != nil {
+		return fmt.Errorf("decoding sendMessage response: %w", err)
+	}
+	if !result.OK {
+		return errors.New("telegram API returned ok=false")
 	}
 	return nil
 }
@@ -425,7 +499,7 @@ func (g *TelegramGate) getUpdates(ctx context.Context) error {
 		} `json:"result"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
 		return fmt.Errorf("decoding response: %w", err)
 	}
 
@@ -504,18 +578,25 @@ func (g *TelegramGate) processCallback(data callbackData) {
 		// Stale or duplicate callback — ignore.
 		return
 	}
-	delete(g.pendingRequests, uuid)
+	if g.closed {
+		return
+	}
+	if data.Action != "approve" && data.Action != "deny" {
+		return
+	}
+	decision := Denied
+	if data.Action == "approve" {
+		decision = Approved
+	}
+	g.finishPendingLocked(pending, decision)
 
 	if data.Action == "approve" {
 		// Add to approval cache if caching is enabled.
-		if g.cfg.approvalCacheTTL > 0 {
+		if g.cfg.approvalCacheTTL > 0 && len(g.approvedCache) < maxTrackedDevices {
 			g.approvedCache[uuid] = approvedCacheEntry{
 				expiresAt: time.Now().Add(g.cfg.approvalCacheTTL),
 			}
 		}
-		// Note: We can't directly signal back to the waiting Check call.
-		// The approval is stored in cache for subsequent requests.
-		// The original request will timeout or be retried.
 		g.logger.InfoContext(context.Background(), "gate: unseal approved",
 			"device_uuid", uuid, "device_name", pending.device.Name)
 		return

@@ -32,7 +32,6 @@ func Validate(cfg *Config) (*ValidatedConfig, error) {
 
 	validateServer(cfg, &errs)
 	validateMasterKey(cfg, &errs)
-	validateRegistry(cfg, &errs)
 	validateDevices(cfg, &errs)
 	validateNotifications(cfg, vc, &errs)
 	validateGate(cfg, vc, &errs)
@@ -104,12 +103,6 @@ func validateMasterKey(cfg *Config, errs *[]error) {
 	}
 	if m.Path == "" {
 		*errs = append(*errs, errors.New(`master_key.path is required when source is "file"`))
-	}
-}
-
-func validateRegistry(cfg *Config, errs *[]error) {
-	if cfg.Registry.Path == "" {
-		*errs = append(*errs, errors.New("registry.path is required"))
 	}
 }
 

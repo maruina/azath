@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,10 +16,9 @@ import (
 	"github.com/maruina/azath/internal/testutil"
 )
 
-// writeDevConfig writes a minimal valid config for dev mode. keyPath and
-// registryPath are absolute paths to the key file and registry JSON file.
+// writeDevConfig writes a minimal valid config for dev mode.
 // grpcAddr and metricsAddr must be valid loopback addresses (e.g. "127.0.0.1:4050").
-func writeDevConfig(t *testing.T, keyPath, registryPath, grpcAddr, metricsAddr string) string {
+func writeDevConfig(t *testing.T, keyPath, grpcAddr, metricsAddr string) string {
 	t.Helper()
 	cfgYAML := fmt.Sprintf(`
 server:
@@ -26,8 +28,6 @@ server:
   name: dev-server
 master_key:
   source: file
-  path: %s
-registry:
   path: %s
 notifications:
   telegram:
@@ -40,7 +40,7 @@ gate:
   type: telegram
   telegram:
     authorized_user_id: "123456789"
-`, grpcAddr, metricsAddr, keyPath, registryPath)
+`, grpcAddr, metricsAddr, keyPath)
 	return testutil.WriteConfig(t, cfgYAML)
 }
 
@@ -100,8 +100,6 @@ server:
 master_key:
   source: file
   path: /etc/azath/master.key
-registry:
-  path: /tmp/registry.json
 devices:
   - name: talos-node
     uuid: 550e8400-e29b-41d4-a716-446655440000
@@ -119,8 +117,7 @@ func TestServeCmd_MissingKeyFile(t *testing.T) {
 	// t.Setenv cannot be combined with t.Parallel.
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "nonexistent.key")
-	registryPath := filepath.Join(dir, "registry.json")
-	cfgPath := writeDevConfig(t, keyPath, registryPath, "127.0.0.1:0", "127.0.0.1:0")
+	cfgPath := writeDevConfig(t, keyPath, "127.0.0.1:0", "127.0.0.1:0")
 
 	t.Setenv("AZATH_SEAL_TOKEN", "test-seal-token")
 
@@ -137,11 +134,10 @@ func TestServeCmd_MissingSealTokenEnvVar(t *testing.T) {
 	// t.Setenv cannot be combined with t.Parallel.
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "master.key")
-	registryPath := filepath.Join(dir, "registry.json")
 
 	testutil.WriteKeyFile(t, keyPath)
 
-	cfgPath := writeDevConfig(t, keyPath, registryPath, "127.0.0.1:0", "127.0.0.1:0")
+	cfgPath := writeDevConfig(t, keyPath, "127.0.0.1:0", "127.0.0.1:0")
 
 	// Ensure AZATH_SEAL_TOKEN is not set.
 	t.Setenv("AZATH_SEAL_TOKEN", "")
@@ -165,16 +161,32 @@ func TestServeCmd_DevModeBootAndShutdown(t *testing.T) {
 	registryPath := filepath.Join(dir, "registry.json")
 	grpcAddr := "127.0.0.1:" + freePort(t)
 	metricsAddr := "127.0.0.1:" + freePort(t)
-	cfgPath := writeDevConfig(t, keyPath, registryPath, grpcAddr, metricsAddr)
+	cfgPath := writeDevConfig(t, keyPath, grpcAddr, metricsAddr)
+	// Obsolete state must not affect startup or a config-only rename.
+	if err := os.WriteFile(registryPath, []byte(`{"devices":[{"name":"old-name","uuid":"550e8400-e29b-41d4-a716-446655440000"}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(cfgPath) // #nosec G304 -- cfgPath is a test-owned temporary file
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte(strings.ReplaceAll(string(data), "talos-node", "renamed-node")), 0600); err != nil { // #nosec G703 -- cfgPath is a test-owned temporary file
+		t.Fatal(err)
+	}
 
 	t.Setenv("AZATH_SEAL_TOKEN", "test-seal-token-value")
 	t.Setenv("AZATH_BOT_TOKEN", "fake-bot-token-for-testing")
 
 	ctx, cancel := context.WithCancel(t.Context())
 
+	telegram := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true,"result":[]}`))
+	}))
+	defer telegram.Close()
+
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- runServe(ctx, cfgPath, true, "")
+		errCh <- runServe(ctx, cfgPath, true, telegram.URL)
 	}()
 
 	// Poll until the gRPC listener accepts connections (up to 5s).

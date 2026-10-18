@@ -33,6 +33,8 @@ curl -fsSL https://github.com/maruina/azath/releases/latest/download/install.sh 
 - `/etc/azath` and `/etc/azath/secrets` (mode `0700`, owned `root:root`) if missing.
 - The binary at `/usr/local/bin/azath`.
 
+Configure `device`, `endpoints`, and all `shares` in one client config, shared by `azath seal` and `azath synology`. The boot helper calls `azath synology` once. It unlocks shares sequentially, continues after a share failure, and returns nonzero for partial failure. One device approval can cover all shares while the approval cache window remains valid; cache TTL zero requires a fresh approval for each request.
+
 The installer does not create a service account or any systemd or Task Scheduler integration. Reruns preserve existing config, sealed blobs, the unseal helper, and Task Scheduler entries.
 
 ## Verify

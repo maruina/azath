@@ -6,8 +6,8 @@ azath is a homelab KMS that protects Talos Linux disk encryption keys and Synolo
 
 **What azath protects:**
 - Stolen Talos or Synology hosts cannot auto-unseal without Telegram approval.
-- With multiple endpoints configured, `azath client` can try a second server after a connection or RPC failure. The second server still requires its own Telegram approval or approval-cache hit.
-- Disabling a device in config and deploying to every server stops sealing and unsealing without modifying the registry.
+- With multiple endpoints configured, `azath synology` can try a second server after a connection or RPC failure. The second server still requires its own Telegram approval or approval-cache hit.
+- Disabling a device in config and deploying to every server stops sealing and unsealing.
 
 **What azath does not protect against:**
 - Compromise of both a sealed blob and the azath master key: anyone with the sealed blob and the master key can decrypt directly.
@@ -17,10 +17,10 @@ azath is a homelab KMS that protects Talos Linux disk encryption keys and Synolo
 ## Shared-state requirements
 These requirements apply when deploying more than one server. Approval caches remain independent and in-memory on each server.
 
-- **Master key**: LAN and VPS must use the same raw 32-byte master key file. Both servers derive the same AES-256-GCM keys, HMAC keys, and instance tags from it. A client can seal through one server and unseal through the other.
+- **Master key**: LAN and VPS must use the same raw 32-byte master key file. Both servers derive the same AES-256-GCM keys and instance tags from it. A client can seal through one server and unseal through the other.
 - **Device config**: LAN and VPS must use the same `devices[]` list in their server configs. Adding or disabling a device requires updating both configs.
 - **Telegram bot tokens**: LAN and VPS must use separate bot tokens when using long polling. Telegram `getUpdates` is a single queue per bot token; if both servers poll the same bot, one server will consume callbacks intended for the other. Both bots may send messages to the same chat/user.
-- **Registry state**: Registry state (wiped flags) is per-server and is **not** the MVP theft-response mechanism. Theft response is handled by setting `devices[].disabled: true` in config and deploying it to both servers.
+- **Device authority**: `devices[]` in the server config is the sole device authority. Renaming a device preserves access to existing blobs for its UUID. Startup and Seal do not create device state files.
 
 ## Server model
 
@@ -31,12 +31,20 @@ These requirements apply when deploying more than one server. Approval caches re
 - Gate type is Telegram only (`gate.type: telegram`).
 - No Tailscale gate, no YubiKey, no 1Password master key source in MVP.
 
+## Approval and key lifetime
+Unseal validates the blob before prompting, clears the validation plaintext, waits for approval, and decrypts again only after approval. Concurrent requests for one UUID share a prompt. Approval releases current waiters even with cache TTL zero; positive cache TTL authorizes later requests for that UUID until expiry. Denial, timeout, cancellation, API error, and shutdown fail closed. Prompt rate limits include unsuccessful attempts.
+
+The gate admits at most 64 pending devices, 32 waiters per device, and 8 HTTP sends. Cache and prompt-history maps each hold at most 1024 devices. HTTP requests time out after 40 seconds, beyond Telegram's 30-second long poll; JSON reads are limited to 64 KiB for sends and 1 MiB for updates.
+
+The server codec clears application-owned response bytes after protobuf serialization. Clients own and clear decoded plaintext after each mount. Transport/runtime copies, DSM argument strings, and the AES expanded key schedule cannot be reliably cleared by this code.
+
 ## Client model
 
-- `azath seal` is a bootstrap CLI used once per device to create sealed blobs. It requires a seal token and reads the plaintext interactively (`--prompt`) or from stdin.
-- `azath client` is a one-shot CLI used at every boot to unseal one secret for a Synology shared folder. It appends the plaintext passphrase as the final argument to a user-provided command.
-- `azath client` tries endpoints in order after an RPC failure or empty response. A nonempty response is passed to the command, and command failure ends the invocation without trying another endpoint. Pending, denied, wrong-key, and decrypt-error responses contain random bytes, so a reachable failing server can prevent use of a later endpoint.
-- `azath seal` uses the first selected endpoint; it does not retry across endpoints.
+- `azath seal` is a bootstrap CLI used once per secret to create sealed blobs. It requires a seal token and reads the plaintext interactively (`--prompt`) or from stdin.
+- `azath synology` unlocks configured shares sequentially at boot using only the fixed DSM executable. It continues after share failure and returns nonzero on partial failure.
+- `azath synology` tries endpoints in order after an RPC failure or empty response. A nonempty response ends endpoint failover for that share. A failed mount does not stop later shares. Denied, wrong-key, and decrypt-error responses contain random bytes, so a reachable failing server can prevent use of a later endpoint.
+- `azath seal` uses the first selected endpoint with a 30-second RPC deadline; it does not retry across endpoints.
+- Synology Unseal has a per-endpoint deadline of 10 minutes by default (`--timeout`, maximum 30 minutes). Each mount has a one-minute deadline. Caller cancellation stops later mounts.
 
 ## Ports
 

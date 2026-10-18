@@ -31,11 +31,9 @@ const (
 type Config struct {
 	Server        ServerConfig    `yaml:"server"`
 	MasterKey     MasterKeyConfig `yaml:"master_key"`
-	Registry      RegistryConfig  `yaml:"registry"`
 	Notifications NotifyConfig    `yaml:"notifications"`
 	Devices       []DeviceConfig  `yaml:"devices"`
 	Gate          *GateConfig     `yaml:"gate,omitempty"`
-	Client        *ClientConfig   `yaml:"client,omitempty"`
 }
 
 // ValidatedConfig holds parsed/resolved values produced by Validate. Config is
@@ -70,11 +68,6 @@ type ServerConfig struct {
 type MasterKeyConfig struct {
 	Source MasterKeySource `yaml:"source"`
 	Path   string          `yaml:"path,omitempty"`
-}
-
-// RegistryConfig specifies the device registry storage path.
-type RegistryConfig struct {
-	Path string `yaml:"path"`
 }
 
 // NotifyConfig holds notification provider settings.
@@ -116,18 +109,6 @@ type TelegramGateConfig struct {
 	// ApprovalCacheTTL is the duration to cache approved devices. Zero disables caching.
 	// Defaults to 2m if not set.
 	ApprovalCacheTTL string `yaml:"approval_cache_ttl,omitempty"`
-}
-
-// ClientConfig holds planned settings for the azath client subcommand.
-type ClientConfig struct {
-	Device    ClientDeviceConfig `yaml:"device"`
-	Endpoints []string           `yaml:"endpoints"`
-}
-
-// ClientDeviceConfig identifies the client device for KMS RPCs.
-type ClientDeviceConfig struct {
-	Name string `yaml:"name"`
-	UUID string `yaml:"uuid"`
 }
 
 // Load reads a YAML config file from path, applies safe defaults, and returns

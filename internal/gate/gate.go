@@ -15,14 +15,13 @@ type Decision int
 const (
 	Denied Decision = iota
 	Approved
-	Pending
 )
 
 // Gate checks whether an Unseal request should be approved.
 // All implementations must be safe for concurrent use.
 type Gate interface {
 	// Check evaluates whether the device should be allowed to unseal.
-	// Returns Approved, Denied, or Pending along with any error.
+	// Waits for Approved or Denied, or returns an error.
 	// On error, the caller must treat the result as denied (fail-closed).
 	Check(ctx context.Context, device Device) (Decision, error)
 

@@ -16,8 +16,6 @@ master_key:
   source: file
   path: /etc/azath/master.key       # raw 32-byte key, mode 0600
 
-registry:
-  path: /etc/azath/registry.json
 
 devices:
   - name: synology

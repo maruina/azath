@@ -20,15 +20,15 @@ make clean   # remove bin/
 - Gate: Telegram only. Every successful Unseal must pass Telegram approval or approval cache.
 - Device source of truth: `devices[]` in server config.
 - Theft response: set `devices[].disabled: true` and deploy the config to every server.
-- Registry/wipe semantics are not part of the MVP.
+- Config is the sole device authority; no persistent registry or wipe state.
 - azath serves plaintext h2c gRPC on loopback only; Caddy terminates TLS externally.
 - One LAN server is sufficient; LAN + VPS is optional redundancy. The server's storage, networking, and DNS must not depend on a shared folder it unlocks.
-- Synology client runs one action per invocation. Call `azath client` multiple times for multiple shares.
+- Synology unlocks all configured shares in one sequential invocation.
 
 ## Module
 
 `github.com/maruina/azath` — Go 1.26. Entry point: `cmd/azath/main.go`.
-Subcommands: `serve`, `client`, `seal`, `config validate`, `config new-device`,
+Subcommands: `serve`, `synology`, `seal`, `config validate`, `config new-device`,
 `config enable-device`, `config disable-device`.
 
 ## Directory structure
@@ -37,13 +37,12 @@ Subcommands: `serve`, `client`, `seal`, `config validate`, `config new-device`,
 alerts/          # Prometheus alert rules + tests
 cmd/azath/       # cobra entry point + subcommands
 internal/
-  config/        # Load, LoadFromBytes, Validate, Diff, SafeAttrs
+  config/        # Load, LoadFromBytes, Validate, SafeAttrs
   crypto/        # Sealer, Zero, ZeroOnReturn
   fsutil/        # atomic file write
   gate/          # Telegram approval gate
-  keymanager/    # master key lifecycle + HKDF derivation
+  keymanager/    # master key lifecycle and sealer creation
   observability/ # slog, Prometheus, health HTTP
-  registry/      # legacy device store; avoid adding MVP behavior here
   secret/        # op:// resolution
   server/        # KMS gRPC server
   testutil/      # shared test helpers
@@ -98,7 +97,7 @@ internal/
 - Disabled, unknown, gate-denied, decrypt-error, wrong-instance, and panic paths must be indistinguishable to callers.
 - Disabled devices must not trigger Telegram prompts or use approval cache.
 - `NewGRPCServer` must keep `grpc.MaxRecvMsgSize(1 << 20)` and panic recovery.
-- `Close()` drains in-flight work before zeroing secrets.
+- Drain RPCs with gRPC graceful shutdown before `KMSServer.Close()` zeros the seal token. Gate close drains its own work before zeroing secrets.
 
 ## Telegram gate requirements
 
@@ -109,7 +108,9 @@ internal/
 - Approval callbacks must be bound to the original pending request; an old callback must not approve or remove a replacement request.
 - `serve --telegram-api-base` requires `--dev`. Use only disposable tokens with test endpoints; never use the override in production.
 - Pending entries must be deleted on approve, deny, timeout, context cancellation, and API error.
-- Approval cache is in-memory only and disabled when TTL is zero.
+- Check waits for approval or denial. There is no Pending result or retry protocol.
+- Approval cache is in-memory only and disabled when TTL is zero; current waiters still complete on approval.
+- HTTP timeout must exceed the 30-second Telegram long poll. Bound JSON response reads (64 KiB send, 1 MiB updates).
 - Telegram API failures fail closed.
 
 ## Deploy
@@ -120,25 +121,7 @@ internal/
 - Before public rollout, audit history with Gitleaks, verify public assets through unauthenticated latest and pinned URLs, smoke-test Debian 13 and DSM 7, and upgrade redundant Debian servers one at a time with `/readyz` between them.
 - `systemd-analyze verify` and `caddy validate` validate systemd/Caddy files when tools are available.
 
-## Client CLI MVP
+## Synology CLI
+Use the same config for `seal` and `synology`: `device` identity, `endpoints`, and `shares` entries with `name` and `sealed_blob`. See `examples/client-synology.yaml` and `docs/runbooks/synology.md`.
 
-Use a tiny client config for identity/endpoints:
-
-```yaml
-device:
-  name: synology
-  uuid: 00000000-0000-0000-0000-000000000000
-endpoints:
-  - https://azath-lan.example:443
-  - https://azath-vps.example:443
-```
-
-Run one command per sealed blob/share:
-
-```bash
-azath client --config /etc/azath/client.yaml \
-  --sealed-blob /etc/azath/secrets/homes.key.sealed \
-  -- /usr/syno/sbin/synoshare --enc_mount homes
-```
-
-The client appends the unsealed plaintext as the final exec argument. It must never use a shell or log command arguments. It tries the next endpoint after an RPC failure or empty response, but not after the executed command fails. Do not retry arbitrary commands across endpoints without an explicit side-effect policy.
+Run `azath synology --config /etc/azath/client-synology.yaml`. It calls only `/usr/syno/sbin/synoshare --enc_mount NAME PASSPHRASE`, directly, once per share. Continue after failure and return aggregate nonzero. Never expose subprocess diagnostics or plaintext. Only transport errors or empty responses permit endpoint failover; never retry a mount across endpoints. Cancellation stops further mounts. Unseal defaults to a 10-minute per-endpoint deadline (maximum 30 minutes); mounts have a one-minute deadline. Seal has a fixed 30-second RPC deadline. Use a narrow internal mount function seam in unit tests and the fixed DSM path in Docker. No generic runner or compatibility command is supported.

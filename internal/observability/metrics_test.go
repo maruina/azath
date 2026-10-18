@@ -41,7 +41,6 @@ func TestNewMetrics_Registration(t *testing.T) {
 	// Scalar metrics (Counter, Gauge, Histogram) always appear with zero values.
 	m.UnsealTotal.WithLabelValues("__test__")
 	m.GateApprovals.WithLabelValues("__test__", "__test__")
-	m.NotificationFailures.WithLabelValues("__test__")
 	m.GateAPIErrors.WithLabelValues("__test__")
 	families := metricFamilies(t, m)
 
@@ -52,9 +51,6 @@ func TestNewMetrics_Registration(t *testing.T) {
 		"azath_unseal_duration_seconds",
 		"azath_master_key_loaded",
 		"azath_gate_approvals_total",
-		"azath_registry_size",
-		"azath_notification_failures_total",
-		"azath_registry_load_errors_total",
 		"azath_gate_api_errors_total",
 	}
 	for _, name := range expected {
@@ -102,21 +98,6 @@ func TestGateApprovals_Labels(t *testing.T) {
 	}
 	if !found {
 		t.Error(`did not find azath_gate_approvals_total{gate="telegram",result="approved"}`)
-	}
-}
-
-func TestNotificationFailures_Labels(t *testing.T) {
-	t.Parallel()
-	m := observability.NewMetrics()
-	m.NotificationFailures.WithLabelValues("telegram").Inc()
-
-	families := metricFamilies(t, m)
-	mf, ok := families["azath_notification_failures_total"]
-	if !ok {
-		t.Fatal("azath_notification_failures_total not found")
-	}
-	if !labelExists(mf, "provider", "telegram") {
-		t.Error(`did not find azath_notification_failures_total{provider="telegram"}`)
 	}
 }
 

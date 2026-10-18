@@ -110,8 +110,6 @@ func TestConfigEnableDevice_RemovesField(t *testing.T) {
 master_key:
   source: file
   path: /etc/azath/master.key
-registry:
-  path: /etc/azath/registry.json
 notifications:
   telegram:
     bot_token_ref: "op://vault/azath/bot-token"
@@ -220,8 +218,6 @@ func TestConfigToggleDevice_PreservesComments(t *testing.T) {
 master_key:
   source: file
   path: /etc/azath/master.key
-registry:
-  path: /etc/azath/registry.json
 notifications:
   telegram:
     bot_token_ref: "op://vault/azath/bot-token"
@@ -286,8 +282,6 @@ func TestConfigToggleDevice_InvalidExistingConfig(t *testing.T) {
 master_key:
   source: file
   path: /etc/azath/master.key
-registry:
-  path: /etc/azath/registry.json
 devices:
   - name: talos-node
     uuid: 550e8400-e29b-41d4-a716-446655440000

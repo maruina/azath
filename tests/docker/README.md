@@ -9,9 +9,9 @@ docker run --rm --network none azath-docker-e2e
 The build downloads Go modules and base images. The test run has no external network access, uses disposable secrets, publishes no ports, and needs no host mounts. Containers are removed after the run; the local image remains.
 
 ## What runs
-The suite starts the built `azath serve` as UID/GID 1000, Caddy with an internal CA, and a local Telegram API stub in one container. azath keeps its loopback-only listener. Real `azath seal` and `azath client` processes connect through Caddy using HTTPS URLs and trust the generated CA. A test executable stands in for `synoshare` and accepts only the expected disposable passphrase.
+The suite starts the built `azath serve` as UID/GID 1000, Caddy with an internal CA, and a local Telegram API stub in one container. azath keeps its loopback-only listener. Real `azath seal` and `azath synology` processes connect through Caddy using HTTPS URLs and trust the generated CA. A test executable stands in for `synoshare` and accepts only the expected disposable passphrase.
 
-The Telegram stub enforces the 64-byte callback limit. Tests return captured button data through `getUpdates` to the real Telegram gate. They cover pending approval, wrong user/chat, denial, approval, cache hits, corrupt blobs, restart with persistent key/registry and cleared approvals, and disabled devices without prompts. Process and command waits have deadlines. Cleanup sends SIGTERM and bounds the drain before forcing a stop.
+The Telegram stub enforces the 64-byte callback limit. Tests return captured button data through `getUpdates` to the real Telegram gate. They cover approval of the original waiting RPC, multiple shares, partial mount failure, wrong user/chat, denial, approval, cache hits, corrupt blobs, restart with persistent key/config and cleared approvals, and disabled devices without prompts. Process and command waits have deadlines. Cleanup sends SIGTERM and bounds the drain before forcing a stop.
 
 ## Telegram API override
 Use `azath serve --dev --telegram-api-base http://127.0.0.1:9000` to target a local Telegram API stub. The flag requires `--dev` and accepts an HTTP or HTTPS origin without credentials, paths, queries, or fragments. The default remains `https://api.telegram.org`.

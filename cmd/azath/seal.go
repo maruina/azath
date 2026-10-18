@@ -9,7 +9,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 	kms "github.com/siderolabs/kms-client/api/kms"
@@ -73,9 +76,6 @@ func runSeal(ctx context.Context, configPath string, endpoints []string, sealTok
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
-	if _, parseErr := uuid.Parse(clientCfg.Device.UUID); parseErr != nil {
-		return fmt.Errorf("client.device.uuid is not a valid UUID: %w", parseErr)
-	}
 	if len(endpoints) == 0 {
 		endpoints = clientCfg.Endpoints
 	}
@@ -119,7 +119,9 @@ func runSeal(ctx context.Context, configPath string, endpoints []string, sealTok
 
 	// Call Seal RPC with bearer token.
 	md := metadata.Pairs("authorization", "Bearer "+string(tokenBytes))
-	callCtx := metadata.NewOutgoingContext(ctx, md)
+	deadlineCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	callCtx := metadata.NewOutgoingContext(deadlineCtx, md)
 	client := kms.NewKMSServiceClient(conn)
 
 	resp, err := client.Seal(callCtx, &kms.Request{
@@ -222,8 +224,13 @@ func buildDialOptions(insecureDev bool) []grpc.DialOption {
 	}
 }
 
-// clientConfig is a minimal config for azath client operations.
+type shareConfig struct {
+	Name       string `yaml:"name"`
+	SealedBlob string `yaml:"sealed_blob"`
+}
+
 type clientConfig struct {
+	Shares    []shareConfig      `yaml:"shares"`
 	Device    clientDeviceConfig `yaml:"device"`
 	Endpoints []string           `yaml:"endpoints"`
 }
@@ -235,7 +242,7 @@ type clientDeviceConfig struct {
 
 // loadClientConfig loads and validates a standalone client config file.
 func loadClientConfig(path string) (*clientConfig, error) {
-	data, err := os.ReadFile(path) // #nosec G304 — path comes from CLI flag
+	data, err := readBounded(path, 64<<10)
 	if err != nil {
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
@@ -243,8 +250,8 @@ func loadClientConfig(path string) (*clientConfig, error) {
 	var cfg clientConfig
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("parsing config: %w", err)
+	if decodeErr := dec.Decode(&cfg); decodeErr != nil {
+		return nil, fmt.Errorf("parsing config: %w", decodeErr)
 	}
 
 	if cfg.Device.Name == "" {
@@ -257,5 +264,33 @@ func loadClientConfig(path string) (*clientConfig, error) {
 		return nil, errors.New("client.endpoints must contain at least one endpoint")
 	}
 
+	if decodeErr := dec.Decode(new(any)); !errors.Is(decodeErr, io.EOF) {
+		return nil, errors.New("config must contain exactly one YAML document")
+	}
+	parsed, err := uuid.Parse(cfg.Device.UUID)
+	if err != nil || parsed.String() != cfg.Device.UUID {
+		return nil, errors.New("device UUID must be canonical")
+	}
+	if len(cfg.Device.Name) > 128 || len(cfg.Endpoints) > 8 || len(cfg.Shares) > 64 {
+		return nil, errors.New("config exceeds input limits")
+	}
+	for _, endpoint := range cfg.Endpoints {
+		if len(endpoint) > 2048 {
+			return nil, errors.New("endpoint too long")
+		}
+		if _, err := endpointTarget(endpoint); err != nil {
+			return nil, err
+		}
+	}
+	seen := map[string]struct{}{}
+	for _, share := range cfg.Shares {
+		if !regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_. -]{0,79}$`).MatchString(share.Name) || len(share.SealedBlob) == 0 || len(share.SealedBlob) > 4096 || strings.ContainsRune(share.SealedBlob, 0) {
+			return nil, errors.New("invalid share name or blob path")
+		}
+		if _, ok := seen[share.Name]; ok {
+			return nil, errors.New("duplicate share name")
+		}
+		seen[share.Name] = struct{}{}
+	}
 	return &cfg, nil
 }

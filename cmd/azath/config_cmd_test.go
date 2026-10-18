@@ -18,8 +18,6 @@ server:
 master_key:
   source: file
   path: /etc/azath/master.key
-registry:
-  path: /etc/azath/registry.json
 notifications:
   telegram:
     bot_token_ref: "op://vault/azath/bot-token"
@@ -64,8 +62,6 @@ server:
 master_key:
   source: file
   path: /etc/azath/master.key
-registry:
-  path: /etc/azath/registry.json
 devices:
   - name: talos-node
     uuid: 550e8400-e29b-41d4-a716-446655440000
@@ -86,7 +82,6 @@ func TestConfigValidate_MultipleErrors(t *testing.T) {
 server: {}
 master_key:
   source: file
-registry: {}
 devices:
   - name: talos-node
     uuid: 550e8400-e29b-41d4-a716-446655440000
@@ -95,7 +90,7 @@ devices:
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	for _, want := range []string{"server.listen", "server.seal_token_ref", "master_key.path", "registry.path"} {
+	for _, want := range []string{"server.listen", "server.seal_token_ref", "master_key.path"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("expected %q in err.Error(), got: %s", want, err.Error())
 		}
@@ -111,8 +106,6 @@ server:
 master_key:
   source: file
   path: /etc/azath/master.key
-registry:
-  path: /etc/azath/registry.json
 devices:
   - name: talos-node
     uuid: 550e8400-e29b-41d4-a716-446655440000

@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"testing"
 
 	"github.com/google/uuid"
@@ -25,7 +24,6 @@ import (
 	"github.com/maruina/azath/internal/gate"
 	"github.com/maruina/azath/internal/keymanager"
 	"github.com/maruina/azath/internal/observability"
-	"github.com/maruina/azath/internal/registry"
 	"github.com/maruina/azath/internal/server"
 )
 
@@ -67,18 +65,6 @@ func newTestMetrics(t *testing.T) *observability.Metrics {
 	return observability.NewMetrics()
 }
 
-// newTestRegistry returns an empty in-memory registry backed by a temp dir.
-func newTestRegistry(t *testing.T, m *observability.Metrics) *registry.Registry {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "registry.json")
-	reg, err := registry.Load(path, nil, m, nil)
-	if err != nil {
-		t.Fatalf("registry.Load: %v", err)
-	}
-	return reg
-}
-
-// newLoadedManager returns a Manager with the test key loaded.
 func newLoadedManager(t *testing.T, key []byte, m *observability.Metrics) *keymanager.Manager {
 	t.Helper()
 	mgr := keymanager.New(m, nil)
@@ -103,12 +89,12 @@ const testSealToken = "super-secret-seal-token"
 //
 // Callers must pass WithDevices if they want Seal/Unseal to succeed for any UUID.
 // Without WithDevices, all Seal requests are rejected as unconfigured.
-func newTestServerAndClient(t *testing.T, km *keymanager.Manager, reg *registry.Registry, m *observability.Metrics, opts ...server.Option) (*server.KMSServer, kms.KMSServiceClient) {
+func newTestServerAndClient(t *testing.T, km *keymanager.Manager, m *observability.Metrics, opts ...server.Option) (*server.KMSServer, kms.KMSServiceClient) {
 	t.Helper()
 
 	allOpts := append([]server.Option{server.WithSealToken([]byte(testSealToken))}, opts...)
 
-	srv := server.New(km, reg, m, allOpts...)
+	srv := server.New(km, m, allOpts...)
 
 	lis := bufconn.Listen(bufSize)
 	gs := grpc.NewServer()
@@ -262,10 +248,9 @@ func TestSeal(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			m := newTestMetrics(t)
-			reg := newTestRegistry(t, m)
 			mgr := newLoadedManager(t, testKey(), m)
 			ctx, req, opts := tc.setup(t)
-			_, client := newTestServerAndClient(t, mgr, reg, m, opts...)
+			_, client := newTestServerAndClient(t, mgr, m, opts...)
 
 			resp, err := client.Seal(ctx, req)
 			st, _ := status.FromError(err)
@@ -284,46 +269,31 @@ func TestSeal(t *testing.T) {
 	}
 }
 
-func TestSeal_AutoRegistersNewDevice(t *testing.T) {
+func TestSeal_ConfiguredDeviceWithoutPersistentState(t *testing.T) {
 	t.Parallel()
 
 	m := newTestMetrics(t)
-	reg := newTestRegistry(t, m)
 	mgr := newLoadedManager(t, testKey(), m)
 	nodeUUID := uuid.New().String()
 	devices := map[string]server.DeviceInfo{
 		nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: false},
 	}
-	_, client := newTestServerAndClient(t, mgr, reg, m, server.WithDevices(devices))
-
-	// Device not in registry initially.
-	if reg.Len() != 0 {
-		t.Fatalf("expected empty registry, got %d devices", reg.Len())
-	}
+	_, client := newTestServerAndClient(t, mgr, m, server.WithDevices(devices))
 
 	sealOne(t, t.Context(), client, nodeUUID, bytes.Repeat([]byte{1}, 32))
 
-	// After seal, device must be registered.
-	entry, err := reg.Lookup(nodeUUID)
-	if err != nil {
-		t.Fatalf("Lookup after Seal: %v", err)
-	}
-	if entry.UUID != nodeUUID {
-		t.Errorf("registered UUID = %q, want %q", entry.UUID, nodeUUID)
-	}
 }
 
 func TestSeal_IncrementsSealTotal(t *testing.T) {
 	t.Parallel()
 
 	m := newTestMetrics(t)
-	reg := newTestRegistry(t, m)
 	mgr := newLoadedManager(t, testKey(), m)
 	nodeUUID := uuid.New().String()
 	devices := map[string]server.DeviceInfo{
 		nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: false},
 	}
-	_, client := newTestServerAndClient(t, mgr, reg, m, server.WithDevices(devices))
+	_, client := newTestServerAndClient(t, mgr, m, server.WithDevices(devices))
 
 	for range 3 {
 		sealOne(t, t.Context(), client, nodeUUID, bytes.Repeat([]byte{1}, 32))
@@ -354,18 +324,14 @@ func TestSeal_MasterKeyNotLoaded(t *testing.T) {
 	t.Parallel()
 
 	m := newTestMetrics(t)
-	reg := newTestRegistry(t, m)
 	mgr := newUnloadedManager(t, m)
 	nodeUUID := uuid.New().String()
 	devices := map[string]server.DeviceInfo{
 		nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: false},
 	}
-	_, client := newTestServerAndClient(t, mgr, reg, m, server.WithDevices(devices))
+	_, client := newTestServerAndClient(t, mgr, m, server.WithDevices(devices))
 
 	// Pre-register so the lookup succeeds (though Seal will fail on km.Sealer())
-	if err := reg.Register(nodeUUID, nodeUUID); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
 
 	_, err := client.Seal(ctxWithBearer(t.Context(), testSealToken), &kms.Request{
 		NodeUuid: nodeUUID,
@@ -422,21 +388,21 @@ func TestUnseal_OracleContract(t *testing.T) {
 
 	cases := []struct {
 		name       string
-		mutate     func(t *testing.T, km **keymanager.Manager, reg *registry.Registry, m *observability.Metrics, opts *[]server.Option, req **kms.Request, devices *map[string]server.DeviceInfo)
+		mutate     func(t *testing.T, km **keymanager.Manager, m *observability.Metrics, opts *[]server.Option, req **kms.Request, devices *map[string]server.DeviceInfo)
 		wantReason string
 		wantOK     bool // true = codes.OK with non-empty data
 	}{
 		{
 			name: "unknown_uuid",
-			mutate: func(_ *testing.T, _ **keymanager.Manager, _ *registry.Registry, _ *observability.Metrics, _ *[]server.Option, req **kms.Request, _ *map[string]server.DeviceInfo) {
-				(*req).NodeUuid = uuid.New().String() // UUID not in config or registry
+			mutate: func(_ *testing.T, _ **keymanager.Manager, _ *observability.Metrics, _ *[]server.Option, req **kms.Request, _ *map[string]server.DeviceInfo) {
+				(*req).NodeUuid = uuid.New().String() // UUID not in config
 			},
 			wantReason: "unknown_uuid",
 			wantOK:     true,
 		},
 		{
 			name: "disabled",
-			mutate: func(_ *testing.T, _ **keymanager.Manager, _ *registry.Registry, _ *observability.Metrics, _ *[]server.Option, _ **kms.Request, devices *map[string]server.DeviceInfo) {
+			mutate: func(_ *testing.T, _ **keymanager.Manager, _ *observability.Metrics, _ *[]server.Option, _ **kms.Request, devices *map[string]server.DeviceInfo) {
 				// Mark nodeUUID as disabled in config.
 				info := (*devices)[nodeUUID]
 				info.Disabled = true
@@ -447,7 +413,7 @@ func TestUnseal_OracleContract(t *testing.T) {
 		},
 		{
 			name: "master_key_not_loaded",
-			mutate: func(t *testing.T, km **keymanager.Manager, reg *registry.Registry, m *observability.Metrics, opts *[]server.Option, req **kms.Request, _ *map[string]server.DeviceInfo) {
+			mutate: func(t *testing.T, km **keymanager.Manager, m *observability.Metrics, opts *[]server.Option, req **kms.Request, _ *map[string]server.DeviceInfo) {
 				t.Helper()
 				(*km) = newUnloadedManager(t, m)
 			},
@@ -456,7 +422,7 @@ func TestUnseal_OracleContract(t *testing.T) {
 		},
 		{
 			name: "master_key_destroyed",
-			mutate: func(t *testing.T, km **keymanager.Manager, reg *registry.Registry, m *observability.Metrics, opts *[]server.Option, req **kms.Request, _ *map[string]server.DeviceInfo) {
+			mutate: func(t *testing.T, km **keymanager.Manager, m *observability.Metrics, opts *[]server.Option, req **kms.Request, _ *map[string]server.DeviceInfo) {
 				t.Helper()
 				// Destroy the loaded manager — ErrDestroyed also maps to master_key_not_loaded.
 				(*km).Destroy()
@@ -466,23 +432,15 @@ func TestUnseal_OracleContract(t *testing.T) {
 		},
 		{
 			name: "gate_denied",
-			mutate: func(_ *testing.T, _ **keymanager.Manager, _ *registry.Registry, _ *observability.Metrics, opts *[]server.Option, _ **kms.Request, _ *map[string]server.DeviceInfo) {
+			mutate: func(_ *testing.T, _ **keymanager.Manager, _ *observability.Metrics, opts *[]server.Option, _ **kms.Request, _ *map[string]server.DeviceInfo) {
 				*opts = append(*opts, server.WithGate(&stubGate{result: gate.Denied}))
 			},
 			wantReason: "gate_denied",
 			wantOK:     true,
 		},
 		{
-			name: "gate_pending",
-			mutate: func(_ *testing.T, _ **keymanager.Manager, _ *registry.Registry, _ *observability.Metrics, opts *[]server.Option, _ **kms.Request, _ *map[string]server.DeviceInfo) {
-				*opts = append(*opts, server.WithGate(&stubGate{result: gate.Pending}))
-			},
-			wantReason: "gate_pending",
-			wantOK:     true,
-		},
-		{
 			name: "gate_error_fails_closed",
-			mutate: func(_ *testing.T, _ **keymanager.Manager, _ *registry.Registry, _ *observability.Metrics, opts *[]server.Option, _ **kms.Request, _ *map[string]server.DeviceInfo) {
+			mutate: func(_ *testing.T, _ **keymanager.Manager, _ *observability.Metrics, opts *[]server.Option, _ **kms.Request, _ *map[string]server.DeviceInfo) {
 				*opts = append(*opts, server.WithGate(&stubGate{result: gate.Denied, err: errors.New("api unavailable")}))
 			},
 			wantReason: "gate_denied",
@@ -490,7 +448,7 @@ func TestUnseal_OracleContract(t *testing.T) {
 		},
 		{
 			name: "decrypt_error",
-			mutate: func(_ *testing.T, _ **keymanager.Manager, _ *registry.Registry, _ *observability.Metrics, _ *[]server.Option, req **kms.Request, _ *map[string]server.DeviceInfo) {
+			mutate: func(_ *testing.T, _ **keymanager.Manager, _ *observability.Metrics, _ *[]server.Option, req **kms.Request, _ *map[string]server.DeviceInfo) {
 				// Send tampered data — valid length but wrong content
 				tampered := make([]byte, len((*req).Data))
 				copy(tampered, (*req).Data)
@@ -502,7 +460,7 @@ func TestUnseal_OracleContract(t *testing.T) {
 		},
 		{
 			name: "wrong_instance",
-			mutate: func(t *testing.T, km **keymanager.Manager, reg *registry.Registry, m *observability.Metrics, _ *[]server.Option, req **kms.Request, _ *map[string]server.DeviceInfo) {
+			mutate: func(t *testing.T, km **keymanager.Manager, m *observability.Metrics, _ *[]server.Option, req **kms.Request, _ *map[string]server.DeviceInfo) {
 				t.Helper()
 				// Seal with alt key then try to unseal with original key
 				altMgr := newLoadedManager(t, altKey(), m)
@@ -527,7 +485,6 @@ func TestUnseal_OracleContract(t *testing.T) {
 			t.Parallel()
 
 			m := newTestMetrics(t)
-			reg := newTestRegistry(t, m)
 			km := newLoadedManager(t, testKey(), m)
 			var opts []server.Option
 
@@ -547,16 +504,11 @@ func TestUnseal_OracleContract(t *testing.T) {
 			}
 			sealer.Destroy()
 
-			// Register the device in the registry.
-			if regErr := reg.Register(nodeUUID, nodeUUID); regErr != nil {
-				t.Fatalf("Register: %v", regErr)
-			}
-
 			req := &kms.Request{NodeUuid: nodeUUID, Data: sealed}
-			tc.mutate(t, &km, reg, m, &opts, &req, &devices)
+			tc.mutate(t, &km, m, &opts, &req, &devices)
 
 			opts = append(opts, server.WithDevices(devices))
-			_, client := newTestServerAndClient(t, km, reg, m, opts...)
+			_, client := newTestServerAndClient(t, km, m, opts...)
 
 			resp, err := client.Unseal(t.Context(), req)
 			st, _ := status.FromError(err)
@@ -591,12 +543,12 @@ func TestUnseal_Success(t *testing.T) {
 	nodeUUID := uuid.New().String()
 
 	m := newTestMetrics(t)
-	reg := newTestRegistry(t, m)
 	mgr := newLoadedManager(t, testKey(), m)
 	devices := map[string]server.DeviceInfo{
 		nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: false},
 	}
-	_, client := newTestServerAndClient(t, mgr, reg, m, server.WithDevices(devices))
+	_, client := newTestServerAndClient(t, mgr, m,
+		server.WithDevices(devices), server.WithGate(&stubGate{result: gate.Approved}))
 
 	// Seal via client.
 	sealed := sealOne(t, t.Context(), client, nodeUUID, plaintext)
@@ -628,12 +580,12 @@ func TestServer_ConcurrentSealUnseal(t *testing.T) {
 	nodeUUID := uuid.New().String()
 
 	m := newTestMetrics(t)
-	reg := newTestRegistry(t, m)
 	mgr := newLoadedManager(t, testKey(), m)
 	devices := map[string]server.DeviceInfo{
 		nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: false},
 	}
-	_, client := newTestServerAndClient(t, mgr, reg, m, server.WithDevices(devices))
+	_, client := newTestServerAndClient(t, mgr, m,
+		server.WithDevices(devices), server.WithGate(&stubGate{result: gate.Approved}))
 
 	const goroutines = 100
 	// Capture context once outside goroutines to avoid t.Context() in goroutines.
@@ -679,9 +631,8 @@ func TestClose_ZerosSealToken(t *testing.T) {
 	t.Parallel()
 
 	m := newTestMetrics(t)
-	reg := newTestRegistry(t, m)
 	mgr := newLoadedManager(t, testKey(), m)
-	srv := server.New(mgr, reg, m, server.WithSealToken([]byte(testSealToken)))
+	srv := server.New(mgr, m, server.WithSealToken([]byte(testSealToken)))
 
 	// Token should be set before Close.
 	if len(server.SealTokenForTesting(srv)) == 0 {
@@ -699,20 +650,19 @@ func TestClose_ZerosSealToken(t *testing.T) {
 	}
 }
 
-// --- Seal registration ordering ---
+// --- Seal with unavailable key ---
 
-func TestSeal_DoesNotRegisterOnSealFailure(t *testing.T) {
+func TestSeal_UnloadedMasterKeyFails(t *testing.T) {
 	t.Parallel()
 
 	m := newTestMetrics(t)
-	reg := newTestRegistry(t, m)
 	// Use unloaded manager so km.Sealer() fails.
 	mgr := newUnloadedManager(t, m)
 	nodeUUID := uuid.New().String()
 	devices := map[string]server.DeviceInfo{
 		nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: false},
 	}
-	_, client := newTestServerAndClient(t, mgr, reg, m, server.WithDevices(devices))
+	_, client := newTestServerAndClient(t, mgr, m, server.WithDevices(devices))
 
 	_, err := client.Seal(ctxWithBearer(t.Context(), testSealToken), &kms.Request{
 		NodeUuid: nodeUUID,
@@ -720,11 +670,6 @@ func TestSeal_DoesNotRegisterOnSealFailure(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Seal with unloaded key succeeded, want error")
-	}
-
-	// Device must NOT be in the registry — no phantom entry.
-	if reg.Len() != 0 {
-		t.Errorf("registry has %d devices after failed Seal, want 0", reg.Len())
 	}
 }
 
@@ -734,7 +679,6 @@ func TestSeal_EmptyTokenBypassed(t *testing.T) {
 	t.Parallel()
 
 	m := newTestMetrics(t)
-	reg := newTestRegistry(t, m)
 	mgr := newLoadedManager(t, testKey(), m)
 	nodeUUID := uuid.New().String()
 	devices := map[string]server.DeviceInfo{
@@ -742,7 +686,7 @@ func TestSeal_EmptyTokenBypassed(t *testing.T) {
 	}
 
 	// Create server WITHOUT WithSealToken — sealToken is nil/empty.
-	srv := server.New(mgr, reg, m, server.WithDevices(devices))
+	srv := server.New(mgr, m, server.WithDevices(devices))
 	defer srv.Close()
 
 	// Build an incoming context with an empty bearer token.
@@ -769,14 +713,13 @@ func TestUnseal_GateError_IncrementsGateAPIErrors(t *testing.T) {
 	t.Parallel()
 
 	m := newTestMetrics(t)
-	reg := newTestRegistry(t, m)
 	mgr := newLoadedManager(t, testKey(), m)
 
 	nodeUUID := uuid.New().String()
 	devices := map[string]server.DeviceInfo{
 		nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: false},
 	}
-	// Register and pre-seal so we have a valid blob.
+	// Pre-seal so we have a valid blob.
 	sealer, err := mgr.Sealer()
 	if err != nil {
 		t.Fatalf("Sealer: %v", err)
@@ -786,11 +729,8 @@ func TestUnseal_GateError_IncrementsGateAPIErrors(t *testing.T) {
 		t.Fatalf("Seal: %v", err)
 	}
 	sealer.Destroy()
-	if regErr := reg.Register(nodeUUID, nodeUUID); regErr != nil {
-		t.Fatalf("Register: %v", regErr)
-	}
 
-	_, client := newTestServerAndClient(t, mgr, reg, m,
+	_, client := newTestServerAndClient(t, mgr, m,
 		server.WithDevices(devices),
 		server.WithGate(&stubGate{result: gate.Denied, err: errors.New("api timeout")}),
 	)
@@ -827,234 +767,9 @@ func TestUnseal_GateError_IncrementsGateAPIErrors(t *testing.T) {
 	}
 }
 
-// --- Notifier tests ---
-
-// stubNotifier records NotifySeal calls and can return a configured error.
-type stubNotifier struct {
-	mu    sync.Mutex
-	calls []string
-	err   error
-}
-
-func (n *stubNotifier) NotifySeal(_ context.Context, nodeUUID string) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.calls = append(n.calls, nodeUUID)
-	return n.err
-}
-
-func (n *stubNotifier) callCount() int {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return len(n.calls)
-}
-
-func TestNotifier_CalledOnceForNewDevice(t *testing.T) {
-	t.Parallel()
-
-	m := newTestMetrics(t)
-	reg := newTestRegistry(t, m)
-	mgr := newLoadedManager(t, testKey(), m)
-	nodeUUID := uuid.New().String()
-	devices := map[string]server.DeviceInfo{
-		nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: false},
-	}
-
-	notifier := &stubNotifier{}
-	_, client := newTestServerAndClient(t, mgr, reg, m,
-		server.WithDevices(devices),
-		server.WithNotifier(notifier),
-	)
-
-	// First Seal — new device, should trigger notification.
-	sealOne(t, t.Context(), client, nodeUUID, bytes.Repeat([]byte{1}, 32))
-	// Second Seal — known device, no notification.
-	sealOne(t, t.Context(), client, nodeUUID, bytes.Repeat([]byte{2}, 32))
-
-	// Give the goroutine time to execute (it's async).
-	// Use a simple poll since we don't have a channel signal here.
-	var count int
-	for range 50 {
-		count = notifier.callCount()
-		if count >= 1 {
-			break
-		}
-		// Brief yield to let the goroutine run.
-		runtime_yield()
-	}
-	if count != 1 {
-		t.Errorf("NotifySeal called %d times, want exactly 1 (new device only)", count)
-	}
-}
-
-func TestNotifier_FailureIncrementsNotificationFailures(t *testing.T) {
-	t.Parallel()
-
-	m := newTestMetrics(t)
-	reg := newTestRegistry(t, m)
-	mgr := newLoadedManager(t, testKey(), m)
-	nodeUUID := uuid.New().String()
-	devices := map[string]server.DeviceInfo{
-		nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: false},
-	}
-
-	notifier := &stubNotifier{err: errors.New("telegram down")}
-	_, client := newTestServerAndClient(t, mgr, reg, m,
-		server.WithDevices(devices),
-		server.WithNotifier(notifier),
-	)
-
-	sealOne(t, t.Context(), client, nodeUUID, bytes.Repeat([]byte{1}, 32))
-
-	// Poll until the goroutine completes.
-	var count int
-	for range 50 {
-		count = notifier.callCount()
-		if count >= 1 {
-			break
-		}
-		runtime_yield()
-	}
-	if count < 1 {
-		t.Fatal("NotifySeal never called")
-	}
-
-	m.NotificationFailures.WithLabelValues("unknown")
-	mfs, err := m.Registry.Gather()
-	if err != nil {
-		t.Fatalf("Gather: %v", err)
-	}
-	found := false
-	for _, mf := range mfs {
-		if mf.GetName() != "azath_notification_failures_total" {
-			continue
-		}
-		for _, metric := range mf.GetMetric() {
-			for _, lp := range metric.GetLabel() {
-				if lp.GetName() == "provider" && lp.GetValue() == "unknown" {
-					found = true
-					if got := metric.GetCounter().GetValue(); got < 1 {
-						t.Errorf("notification_failures_total{provider=unknown} = %v, want >= 1", got)
-					}
-				}
-			}
-		}
-	}
-	if !found {
-		t.Error("notification_failures_total{provider=unknown} not found")
-	}
-}
-
-func TestClose_DrainsNotifierGoroutines(t *testing.T) {
-	t.Parallel()
-
-	m := newTestMetrics(t)
-	reg := newTestRegistry(t, m)
-	mgr := newLoadedManager(t, testKey(), m)
-	nodeUUID := uuid.New().String()
-	devices := map[string]server.DeviceInfo{
-		nodeUUID: {Name: "test-device", UUID: nodeUUID, Disabled: false},
-	}
-
-	ready := make(chan struct{})
-	unblock := make(chan struct{})
-	var entered atomic.Bool
-
-	blockingN := &blockingNotifier{
-		ready:   ready,
-		unblock: unblock,
-		entered: &entered,
-	}
-
-	srv := server.New(mgr, reg, m,
-		server.WithSealToken([]byte(testSealToken)),
-		server.WithDevices(devices),
-		server.WithNotifier(blockingN),
-	)
-
-	// Call Seal directly with an incoming metadata context (avoids gRPC stack).
-	incomingCtx := metadata.NewIncomingContext(
-		t.Context(),
-		metadata.Pairs("authorization", "Bearer "+testSealToken),
-	)
-	_, err := srv.Seal(incomingCtx, &kms.Request{
-		NodeUuid: nodeUUID,
-		Data:     bytes.Repeat([]byte{1}, 32),
-	})
-	if err != nil {
-		t.Fatalf("Seal: %v", err)
-	}
-
-	// Wait for the goroutine to enter NotifySeal.
-	select {
-	case <-ready:
-	case <-t.Context().Done():
-		t.Fatal("goroutine never entered NotifySeal")
-	}
-
-	// Close must block while the goroutine is running.
-	closeDone := make(chan struct{})
-	go func() {
-		defer close(closeDone)
-		srv.Close()
-	}()
-
-	select {
-	case <-closeDone:
-		t.Fatal("Close returned before notifier goroutine unblocked")
-	default:
-		// Good: Close is still waiting.
-	}
-
-	// Unblock the notifier.
-	close(unblock)
-
-	// Close must return promptly now.
-	select {
-	case <-closeDone:
-		// Expected.
-	case <-t.Context().Done():
-		t.Fatal("Close never returned after notifier goroutine unblocked")
-	}
-
-	// Seal token must be zeroed.
-	tok := server.SealTokenForTesting(srv)
-	for i, b := range tok {
-		if b != 0 {
-			t.Errorf("sealToken[%d] = %#x after Close, want 0", i, b)
-		}
-	}
-}
-
-// blockingNotifier blocks in NotifySeal until unblocked by the test.
-type blockingNotifier struct {
-	ready   chan struct{}
-	unblock chan struct{}
-	entered *atomic.Bool
-}
-
-func (n *blockingNotifier) NotifySeal(_ context.Context, _ string) error {
-	if n.entered.CompareAndSwap(false, true) {
-		close(n.ready)
-	}
-	<-n.unblock
-	return nil
-}
-
-// runtime_yield gives other goroutines a chance to run. Used only in tests
-// that need to observe async side-effects without channels.
-func runtime_yield() {
-	var wg sync.WaitGroup
-	wg.Go(func() {})
-	wg.Wait()
-}
-
-// --- New panics on nil inputs ---
-
 func TestNew_NilInputsPanic(t *testing.T) {
 	t.Parallel()
 	m := newTestMetrics(t)
-	reg := newTestRegistry(t, m)
 	mgr := newUnloadedManager(t, m)
 
 	cases := []struct {
@@ -1063,15 +778,11 @@ func TestNew_NilInputsPanic(t *testing.T) {
 	}{
 		{
 			name: "nil_manager",
-			fn:   func() { server.New(nil, reg, m) },
-		},
-		{
-			name: "nil_registry",
-			fn:   func() { server.New(mgr, nil, m) },
+			fn:   func() { server.New(nil, m) },
 		},
 		{
 			name: "nil_metrics",
-			fn:   func() { server.New(mgr, reg, nil) },
+			fn:   func() { server.New(mgr, nil) },
 		},
 	}
 

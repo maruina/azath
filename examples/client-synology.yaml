@@ -1,4 +1,4 @@
-# azath client configuration for Synology NAS.
+# azath synology configuration for Synology NAS.
 # See docs/runbooks/synology.md for the full Synology deployment guide.
 #
 # The client tries endpoints in order and falls back if the first is unavailable.
@@ -10,3 +10,9 @@ device:
 endpoints:
   - https://azath-vps.example.com:443
   - https://azath-lan.example.internal:443
+
+shares:
+  - name: homes
+    sealed_blob: /etc/azath/secrets/homes.key.sealed
+  - name: media
+    sealed_blob: /etc/azath/secrets/media.key.sealed
