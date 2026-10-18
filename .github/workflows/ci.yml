@@ -35,6 +35,17 @@ jobs:
           mkdir -p bin
           go build -ldflags "-X main.version=${GITHUB_REF_NAME:-dev} -X main.commit=${GITHUB_SHA:-none}" -o bin/azath ./cmd/azath
 
+  docker-e2e:
+    name: Docker E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Build test image
+        run: docker build -f tests/docker/Dockerfile -t azath-docker-e2e .
+      - name: Test without external network access
+        run: docker run --rm --network none azath-docker-e2e
+
   installer:
     name: Installer
     runs-on: ubuntu-latest

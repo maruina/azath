@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -34,20 +35,33 @@ const masterKeyLoadTimeout = 60 * time.Second
 func newServeCmd() *cobra.Command {
 	var configPath string
 	var dev bool
+	var telegramAPIBase string
 
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the gRPC KMS server",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServe(cmd.Context(), configPath, dev)
+			return runServe(cmd.Context(), configPath, dev, telegramAPIBase)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "/etc/azath/server.yaml", "path to config file")
 	cmd.Flags().BoolVar(&dev, "dev", false, "development mode: text logging, skip mlock")
+	cmd.Flags().StringVar(&telegramAPIBase, "telegram-api-base", "", "Telegram API base URL for testing; requires --dev")
 	return cmd
 }
 
-func runServe(ctx context.Context, configPath string, dev bool) error {
+func runServe(ctx context.Context, configPath string, dev bool, telegramAPIBase string) error {
+	var gateOptions []gate.Option
+	if telegramAPIBase != "" {
+		if !dev {
+			return errors.New("--telegram-api-base requires --dev")
+		}
+		u, err := url.Parse(telegramAPIBase)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+			return errors.New("--telegram-api-base must be an HTTP or HTTPS origin without credentials, path, query, or fragment")
+		}
+		gateOptions = append(gateOptions, gate.WithAPIBase(telegramAPIBase))
+	}
 	// mlock runs before config is loaded; use a plain stderr logger as bootstrap.
 	var mlocked bool
 	if !dev {
@@ -179,6 +193,7 @@ func runServe(ctx context.Context, configPath string, dev bool) error {
 			approvalTTL,
 			vc.TelegramApprovalCacheTTL,
 			logger,
+			gateOptions...,
 		)
 		if err != nil {
 			return fmt.Errorf("creating telegram gate: %w", err)
