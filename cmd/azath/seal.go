@@ -106,7 +106,10 @@ func runSeal(ctx context.Context, configPath string, endpoints []string, sealTok
 	defer crypto.ZeroOnReturn(&plaintext)
 
 	// Build gRPC connection.
-	target := endpoints[0]
+	target, err := endpointTarget(endpoints[0])
+	if err != nil {
+		return err
+	}
 	dialOpts := buildDialOptions(insecureDev)
 	conn, err := grpc.NewClient(target, dialOpts...)
 	if err != nil {

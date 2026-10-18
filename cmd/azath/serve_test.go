@@ -81,7 +81,7 @@ func TestServeCmd_Flags(t *testing.T) {
 
 func TestServeCmd_MissingConfigFile(t *testing.T) {
 	t.Parallel()
-	err := runServe(t.Context(), "/nonexistent/server.yaml", true)
+	err := runServe(t.Context(), "/nonexistent/server.yaml", true, "")
 	if err == nil {
 		t.Fatal("expected error for missing config file, got nil")
 	}
@@ -106,7 +106,7 @@ devices:
   - name: talos-node
     uuid: 550e8400-e29b-41d4-a716-446655440000
 `
-	err := runServe(t.Context(), testutil.WriteConfig(t, invalid), true)
+	err := runServe(t.Context(), testutil.WriteConfig(t, invalid), true, "")
 	if err == nil {
 		t.Fatal("expected error for invalid config, got nil")
 	}
@@ -124,7 +124,7 @@ func TestServeCmd_MissingKeyFile(t *testing.T) {
 
 	t.Setenv("AZATH_SEAL_TOKEN", "test-seal-token")
 
-	err := runServe(t.Context(), cfgPath, true)
+	err := runServe(t.Context(), cfgPath, true, "")
 	if err == nil {
 		t.Fatal("expected error for missing key file, got nil")
 	}
@@ -146,7 +146,7 @@ func TestServeCmd_MissingSealTokenEnvVar(t *testing.T) {
 	// Ensure AZATH_SEAL_TOKEN is not set.
 	t.Setenv("AZATH_SEAL_TOKEN", "")
 
-	err := runServe(t.Context(), cfgPath, true)
+	err := runServe(t.Context(), cfgPath, true, "")
 	if err == nil {
 		t.Fatal("expected error for missing seal token env var, got nil")
 	}
@@ -174,7 +174,7 @@ func TestServeCmd_DevModeBootAndShutdown(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- runServe(ctx, cfgPath, true)
+		errCh <- runServe(ctx, cfgPath, true, "")
 	}()
 
 	// Poll until the gRPC listener accepts connections (up to 5s).

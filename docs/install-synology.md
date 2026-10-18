@@ -2,6 +2,11 @@
 
 azath ships a root-run installer for Synology DSM 7 clients on `amd64` and `arm64`. On DSM the installer installs only the client binary and root-only config directories — no service account, no systemd integration. The full unseal flow (sealed blobs, client config, boot task) is covered in [Synology unseal flow](runbooks/synology.md).
 
+## Compatibility and validation
+The client integration targets encrypted shared folders through `synoshare --enc_mount`, not DSM encrypted volumes. The DS420+ running DSM 7 is the initial hardware validation target and uses the `amd64` binary. Live DS420+ validation is pending. Other models need a supported CPU architecture and compatible DSM commands; higher hardware specifications alone do not establish compatibility.
+
+The [Docker suite](../tests/docker/README.md) checks the software flow but does not certify a NAS model. Before enabling boot automation, test a disposable shared folder, manual recovery, and a cold boot on the target device.
+
 ## Prerequisites
 
 - DSM 7, `amd64` or `arm64`.

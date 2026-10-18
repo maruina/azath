@@ -2,6 +2,13 @@
 
 This runbook walks through deploying two azath servers — one on your local LAN (e.g. an LXC container) and one on a VPS (e.g. a cloud VM) — plus configuring Caddy for TLS termination.
 
+## Single LAN server
+For an initial deployment, use one LAN host and one Telegram bot. Follow Step 1, the LAN configuration in Step 2, the LAN Caddy setup in Step 3, and Steps 4–6. Skip the VPS configuration, cross-server comparisons, key copying, and Step 7 until adding a second server. Keep only the LAN endpoint in the client config.
+
+The LAN host's storage, networking, and DNS must not depend on an encrypted NAS shared folder. Keep a manual NAS unlock method available if this server or Telegram is unavailable.
+
+The prerequisites below describe the redundant two-server deployment.
+
 ## Prerequisites
 
 - Two Linux machines with `systemd`, one on LAN and one on VPS.
@@ -10,6 +17,8 @@ This runbook walks through deploying two azath servers — one on your local LAN
 - Your Telegram user ID and chat ID for approval messages.
 - A raw 32-byte master key file.
 - The 1Password CLI (`op`) and a service account token.
+
+Install azath on both servers with Step 1 before creating files under `/etc/azath`. Run the setup commands as root.
 
 ### 1Password service account
 
@@ -36,11 +45,13 @@ azath resolves secrets from 1Password via `op://` references. The systemd unit l
 ### Generate master key
 
 ```bash
+umask 077
 dd if=/dev/urandom of=/etc/azath/master.key bs=32 count=1
+chown azath:azath /etc/azath/master.key
 chmod 0600 /etc/azath/master.key
 ```
 
-Copy this file to both servers. It must be identical on LAN and VPS.
+Generate the key once and copy it to the other server. It must be identical on LAN and VPS. Set ownership to `azath:azath` and mode `0600` on both copies. Do not regenerate a key after creating sealed blobs; keep an offline recovery copy.
 
 ## Step 1: Install azath
 
@@ -211,6 +222,17 @@ See `deploy/systemd/azath.service` for a production systemd unit. The service mu
 The unit fails to start if `/etc/azath/onepassword.env` is missing.
 
 ## Step 5: Start services and verify `op` auth
+Before starting the service, set server config ownership and check access on each host:
+
+```sh
+chown azath:azath /etc/azath/server.yaml
+chmod 0600 /etc/azath/server.yaml
+runuser -u azath -- test -r /etc/azath/server.yaml
+runuser -u azath -- test -r /etc/azath/master.key
+runuser -u azath -- test -w /etc/azath
+```
+
+Keep `/etc/azath/onepassword.env` root-owned with mode `0600`; systemd reads it before starting the service. If restoring an existing registry, make it readable and writable by `azath`.
 
 On both servers:
 
@@ -281,10 +303,10 @@ Client tries the VPS endpoint first, hits a timeout, falls back to LAN.
 Both LAN and VPS servers fail closed — all Unseal requests return `codes.OK` with random bytes. The client cannot unseal.
 
 ### Wrong master key on one server
-Unseal returns random bytes (oracle-safe). Client falls back to the other server.
+Unseal returns random bytes. The client passes a nonempty response to the mount command; if that command fails, it exits without trying the next endpoint. Retrying the helper starts at the first endpoint again. Correct the key mismatch rather than relying on failover.
 
 ### Disabled device
 Both servers reject Seal with `codes.PermissionDenied` and Unseal with random bytes, without sending Telegram prompts.
 
 ### 1Password service-account token expired or missing
-The unit fails to start if `/etc/azath/onepassword.env` is missing. If the token is invalid or the service account lacks vault access, azath starts but `/readyz` reports not ready and `op read` errors appear in `journalctl -u azath`. Fix the token or permissions, then restart the service.
+The unit fails to start if `/etc/azath/onepassword.env` is missing. If the token is invalid or the service account lacks vault access, azath exits during secret resolution before opening its health listener; systemd retries it. Inspect the resolution error in `journalctl -u azath`. Fix the token or permissions, then restart the service.

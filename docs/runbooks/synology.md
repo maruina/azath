@@ -14,7 +14,9 @@ The plaintext passphrase exists only as a process argument for the duration of t
 
 ## Prerequisites
 
-- An azath server pair (LAN + VPS) deployed and healthy.
+- At least one healthy azath server. One LAN server is sufficient; a VPS is optional redundancy. For the LAN-only path, follow the LAN sections of [Deploy LAN + VPS](deploy-lan-vps.md).
+- The server's storage, networking, and DNS must be available without unlocking the NAS shared folders.
+- A working manual unlock method and recovery passphrase or key stored independently of azath.
 - One sealed blob per encrypted shared folder.
 - The `azath` binary and client config on the Synology.
 
@@ -68,11 +70,10 @@ device:
   uuid: <synology-uuid>  # must match the UUID generated for this device in the server config
 
 endpoints:
-  - https://azath-vps.example.com:443
   - https://azath-lan.example.internal:443
 ```
 
-Order endpoints with the most reliable first. The client tries endpoints in order; if the first fails, it falls back.
+For redundancy, add a VPS endpoint after the LAN endpoint. Order endpoints with the most reliable first. The client tries the next endpoint after an RPC failure or empty response. If a reachable server returns a nonempty placeholder and the mount command fails, the invocation stops without trying another endpoint. Retrying the helper starts with the first endpoint again. Approval caches are independent on each server.
 
 ## Step 5: Create Synology boot scripts
 
@@ -103,7 +104,7 @@ Make it executable:
 chmod 700 /usr/local/bin/azath-unseal.sh
 ```
 
-`deploy/synology/azath-unseal.sh` in the repository is a fuller version of this script: it logs to `/var/log/azath-unseal.log` and retries each share so a boot succeeds after you approve the Telegram prompt.
+`deploy/synology/azath-unseal.sh` in the repository is a fuller version of this script: it logs to `/var/log/azath-unseal.log`, retries each share, continues after a share exhausts its attempts, and exits nonzero if any share failed. Approve within its retry window; after attempts are exhausted, rerun the helper.
 
 ### Security trade-off
 
@@ -117,6 +118,9 @@ Mitigations:
 - DSM Task Scheduler runs as root; restrict access to the Synology shell.
 
 ## Step 6: Test
+First run the [Docker suite](../../tests/docker/README.md) to check the assembled software without using your NAS. It simulates Telegram and mounting; it does not validate DSM behavior.
+
+On the NAS, start with one disposable encrypted shared folder. Confirm that you can still unlock it manually with azath unavailable before enabling boot automation for existing folders. The DS420+ is the initial hardware validation target, not a verified device. Record the DSM version, mount exit codes, and boot behavior during the live test.
 
 Manually test one invocation:
 
@@ -129,12 +133,12 @@ azath client \
 
 Expected behavior:
 
-- First run: the server sends a Telegram prompt and returns an unusable placeholder response, so the volume does not mount and the command exits nonzero. This is deliberate: pending and denied responses are indistinguishable from successful ones on the wire.
-- After approving in Telegram, run the same command again: the approval cache answers and the volume mounts.
-- The shipped `azath-unseal.sh` retries each share (`ATTEMPTS` tries, `SLEEP_SECONDS` apart) so a fresh boot mounts automatically once you approve.
-- Subsequent runs within approval cache TTL: volume mounts without Telegram prompt.
-- Stopping then re-mounting: idempotent, exit code 0.
-- Wrong sealed blob or unreachable servers: exit code 1.
+- First run: the server sends a Telegram prompt and returns an unusable placeholder response, so the shared folder does not mount and the command exits nonzero. This is deliberate: pending and denied responses are indistinguishable from successful ones on the wire.
+- After approving in Telegram, run the same command again: the approval cache answers and the shared folder mounts.
+- The shipped `azath-unseal.sh` retries each share (`ATTEMPTS` tries, `SLEEP_SECONDS` apart). The mount can succeed after approval if an attempt remains before the approval cache expires.
+- Subsequent runs within approval cache TTL: the shared folder mounts without a Telegram prompt.
+- Unreachable servers, an invalid blob, or a rejected passphrase: the command exits nonzero. A mount command's nonzero exit maps to client exit code 2; setup, RPC, and execution errors map to exit code 1.
+- Confirm the already-mounted behavior and exact `synoshare` exit codes on your DSM version; these are not established by the Docker suite.
 
 ## Step 7: Enable boot task
 
@@ -148,4 +152,4 @@ In DSM Task Scheduler:
 
 ## Idempotency note
 
-`synoshare --enc_mount` is idempotent: running it on an already-mounted share returns exit code 0. Running it with the wrong passphrase returns exit code 2.
+Do not assume that repeating `synoshare --enc_mount` is harmless until you have checked its already-mounted behavior on the target DSM version. The Docker mount stub verifies passphrase delivery, not real Synology command semantics.

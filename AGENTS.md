@@ -1,6 +1,6 @@
 # azath
 
-Homelab KMS for Talos Linux disk encryption and Synology encrypted volume unsealing. Implements the Talos KMS gRPC protocol with AES-256-GCM, Telegram approval, and config-driven device disablement.
+Homelab KMS for Talos Linux disk encryption and Synology encrypted shared-folder unsealing. Implements the Talos KMS gRPC protocol with AES-256-GCM, Telegram approval, and config-driven device disablement.
 
 This file is the agent reference for working in the repo. The project overview, install links, contribution, and release flow live in `README.md`; deployment, install, and architecture guides live in `docs/`.
 
@@ -22,6 +22,7 @@ make clean   # remove bin/
 - Theft response: set `devices[].disabled: true` and deploy the config to every server.
 - Registry/wipe semantics are not part of the MVP.
 - azath serves plaintext h2c gRPC on loopback only; Caddy terminates TLS externally.
+- One LAN server is sufficient; LAN + VPS is optional redundancy. The server's storage, networking, and DNS must not depend on a shared folder it unlocks.
 - Synology client runs one action per invocation. Call `azath client` multiple times for multiple shares.
 
 ## Module
@@ -65,7 +66,9 @@ internal/
 - Use `t.Context()` in tests.
 - Use `httptest.NewRequestWithContext`.
 - Do not call `t.Fatalf` from goroutines; use `t.Errorf` plus return or collect errors in a channel.
-- Run `make test` before marking work complete.
+- Run `make test` before marking work complete; it does not run Docker E2E.
+- For changes to the Telegram gate, client/server wiring, endpoints, or Synology boot helper, also run `docker build -f tests/docker/Dockerfile -t azath-docker-e2e .` and `docker run --rm --network none azath-docker-e2e`. CI runs the same suite in the `Docker E2E` job. Coverage and limits are in `tests/docker/README.md`.
+- Keep Docker tests isolated: disposable secrets, no real Telegram/1Password/NAS access, bounded waits, and process cleanup. Container success does not establish DSM or systemd compatibility.
 
 ## Config rules
 
@@ -102,13 +105,16 @@ internal/
 - Gate zero value is denied.
 - Wrong user, wrong chat, malformed callback data, stale callback data, and tampered callback data must not approve.
 - One pending approval per device UUID.
+- Telegram button `callback_data` must be 1–64 bytes. Test stubs must enforce this limit.
+- Approval callbacks must be bound to the original pending request; an old callback must not approve or remove a replacement request.
+- `serve --telegram-api-base` requires `--dev`. Use only disposable tokens with test endpoints; never use the override in production.
 - Pending entries must be deleted on approve, deny, timeout, context cancellation, and API error.
 - Approval cache is in-memory only and disabled when TTL is zero.
 - Telegram API failures fail closed.
 
 ## Deploy
 
-- `deploy/` contains static production examples; no Go build or test references them.
+- `deploy/` contains deployment examples and installer scripts. `cmd/azath/synology_script_test.go` reads the shipped Synology helper to test per-share failure handling; preserve that coverage when changing the script.
 - Installer validation: run `docker run --rm -e AZATH_INSTALL_TEST_CONTAINER=1 -v "$PWD:/src:ro" -w /src debian:13-slim dash deploy/scripts/install_test.sh`, then the equivalent `busybox:1.37` command with `sh`; run `sh -n` and `shellcheck --shell=sh` for both installer scripts.
 - Release validation: run `goreleaser check` and `goreleaser release --snapshot --clean`; assert stable archives contain only `azath` and `deploy/systemd/azath.service` and that checksums name both archives.
 - Before public rollout, audit history with Gitleaks, verify public assets through unauthenticated latest and pinned URLs, smoke-test Debian 13 and DSM 7, and upgrade redundant Debian servers one at a time with `/readyz` between them.
@@ -135,4 +141,4 @@ azath client --config /etc/azath/client.yaml \
   -- /usr/syno/sbin/synoshare --enc_mount homes
 ```
 
-The client appends the unsealed plaintext as the final exec argument. It must never use a shell or log command arguments.
+The client appends the unsealed plaintext as the final exec argument. It must never use a shell or log command arguments. It tries the next endpoint after an RPC failure or empty response, but not after the executed command fails. Do not retry arbitrary commands across endpoints without an explicit side-effect policy.
