@@ -9,5 +9,5 @@ RUN CGO_ENABLED=0 go build -o /out/azath ./cmd/azath && CGO_ENABLED=0 go test -c
 FROM caddy:2.10.2-alpine
 COPY --from=build /out/azath /usr/local/bin/azath
 COPY --from=build /out/docker-e2e /test/docker-e2e
-RUN ln -s /test/docker-e2e /test/mount
+RUN mkdir -p /usr/syno/sbin && ln -s /test/docker-e2e /usr/syno/sbin/synoshare
 ENTRYPOINT ["/test/docker-e2e", "-test.v", "-test.timeout=120s"]

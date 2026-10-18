@@ -23,7 +23,6 @@ import (
 	"github.com/maruina/azath/internal/keymanager"
 	"github.com/maruina/azath/internal/observability"
 	"github.com/maruina/azath/internal/platform"
-	"github.com/maruina/azath/internal/registry"
 	"github.com/maruina/azath/internal/secret"
 	"github.com/maruina/azath/internal/server"
 )
@@ -51,6 +50,8 @@ func newServeCmd() *cobra.Command {
 }
 
 func runServe(ctx context.Context, configPath string, dev bool, telegramAPIBase string) error {
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
 	var gateOptions []gate.Option
 	if telegramAPIBase != "" {
 		if !dev {
@@ -109,21 +110,6 @@ func runServe(ctx context.Context, configPath string, dev bool, telegramAPIBase 
 		return fmt.Errorf("loading master key: %w", err)
 	}
 
-	// The derived HMAC key is transferred to the registry, which holds it for
-	// the process lifetime. Do not defer-zero it — the registry stores the
-	// original slice, and zeroing it would break future persist operations.
-	hmacKey, err := km.DeriveKey("azath-registry-hmac-v1", 32)
-	if err != nil {
-		return fmt.Errorf("deriving HMAC key: %w", err)
-	}
-
-	// registry.Load stores hmacKey directly without copying (see comment above).
-	reg, err := registry.Load(cfg.Registry.Path, hmacKey, metrics, logger)
-	if err != nil {
-		crypto.Zero(hmacKey) // load failed; registry did not take ownership
-		return fmt.Errorf("loading registry: %w", err)
-	}
-
 	// Build config-derived device lookup table: UUID -> deviceInfo.
 	devices := make(map[string]server.DeviceInfo, len(cfg.Devices))
 	for _, d := range cfg.Devices {
@@ -132,26 +118,6 @@ func runServe(ctx context.Context, configPath string, dev bool, telegramAPIBase 
 			Name:     d.Name,
 			UUID:     parsed.String(),
 			Disabled: d.Disabled,
-		}
-	}
-
-	// Reconcile configured devices into the registry. This ensures every
-	// configured device has a registry entry while rejecting UUID/name conflicts
-	// between config and registry.
-	for uuidStr, dev := range devices {
-		entry, lookupErr := reg.Lookup(uuidStr)
-		switch {
-		case errors.Is(lookupErr, registry.ErrDeviceNotFound):
-			// Not in registry yet — register it with name from config.
-			if regErr := reg.Register(dev.Name, uuidStr); regErr != nil {
-				return fmt.Errorf("registering configured device %s: %w", uuidStr, regErr)
-			}
-		case lookupErr != nil:
-			return fmt.Errorf("looking up configured device %s: %w", uuidStr, lookupErr)
-		default:
-			if entry.Name != dev.Name {
-				return fmt.Errorf("configured device %s name conflict: registry has %q, config has %q", uuidStr, entry.Name, dev.Name)
-			}
 		}
 	}
 
@@ -185,6 +151,7 @@ func runServe(ctx context.Context, configPath string, dev bool, telegramAPIBase 
 			return fmt.Errorf("parsing approval TTL: %w", parseErr)
 		}
 
+		gateOptions = append(gateOptions, gate.WithPromptRateLimit(vc.TelegramRateLimit))
 		g, err = gate.NewTelegramGate(
 			cfg.Server.Name,
 			botToken,
@@ -205,12 +172,13 @@ func runServe(ctx context.Context, configPath string, dev bool, telegramAPIBase 
 		}()
 	}
 
-	kmsSrv := server.New(km, reg, metrics,
+	kmsSrv := server.New(km, metrics,
 		server.WithSealToken(sealToken),
 		server.WithGate(g),
 		server.WithDevices(devices),
 		server.WithLogger(logger),
 	)
+	defer kmsSrv.Close()
 	// KMSServer copies the token; zero our local slice immediately.
 	crypto.Zero(sealToken)
 
@@ -253,17 +221,16 @@ func runServe(ctx context.Context, configPath string, dev bool, telegramAPIBase 
 		slog.String("commit", commit),
 		slog.String("listen", cfg.Server.Listen),
 		slog.String("key_source", string(cfg.MasterKey.Source)),
-		slog.Int("devices", reg.Len()),
+		slog.Int("devices", len(devices)),
 		slog.Bool("mlock_addr_locked", mlocked), // reflects mlockall only; RLIMIT_CORE logged separately on failure
 		slog.Bool("dev", dev),
 	)
 
-	sigCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
+	var serveErr error
 	select {
-	case <-sigCtx.Done():
-	case err := <-srvErr:
-		logger.Error("server error, initiating shutdown", slog.Any("error", err))
+	case <-ctx.Done():
+	case serveErr = <-srvErr:
+		logger.Error("server error, initiating shutdown", slog.Any("error", serveErr))
 		stop()
 	}
 
@@ -293,11 +260,8 @@ func runServe(ctx context.Context, configPath string, dev bool, telegramAPIBase 
 		logger.Warn("HTTP server shutdown error", slog.Any("error", err))
 	}
 
-	kmsSrv.Close()
-	km.Destroy()
-
 	logger.Info("goodbye")
-	return nil
+	return serveErr
 }
 
 // isGRPCStopError reports whether err is the benign closed-listener error

@@ -42,9 +42,7 @@ func TestCloseDrainsBlockedSend(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = g.Close() })
-	if _, err := checkDevice(t, g); err != nil {
-		t.Fatal(err)
-	}
+	result := startCheck(t, g, t.Context())
 	select {
 	case <-entered:
 	case <-time.After(5 * time.Second):
@@ -62,6 +60,7 @@ func TestCloseDrainsBlockedSend(t *testing.T) {
 	default:
 		t.Fatal("Close did not drain sender")
 	}
+	awaitDecision(t, result, Denied)
 	if d, err := g.Check(context.Background(), Device{Name: testDeviceName, UUID: testUUID}); err != nil || d != Denied {
 		t.Fatalf("closed gate: %v, %v", d, err)
 	}
@@ -71,9 +70,8 @@ func TestCallbackCannotApproveReplacementRequest(t *testing.T) {
 	t.Parallel()
 	ft := newFakeTelegram(t)
 	g := newTestGate(t, ft, time.Minute, time.Minute, nil)
-	if _, err := checkDevice(t, g); err != nil {
-		t.Fatal(err)
-	}
+	ctx, cancel := context.WithCancel(t.Context())
+	result := startCheck(t, g, ctx)
 	waitForApprovalMessage(t, ft)
 	encoded := ft.sentApprovals()[0]
 	if len(encoded) > 64 {
@@ -83,11 +81,10 @@ func TestCallbackCannotApproveReplacementRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g.mu.Lock()
-	replacement := g.pendingRequests[testUUID]
-	replacement.createdAt = replacement.createdAt.Add(time.Nanosecond)
-	g.pendingRequests[testUUID] = replacement
-	g.mu.Unlock()
+	cancel()
+	awaitDecision(t, result, Denied)
+	_ = startCheck(t, g, t.Context())
+	waitFor(t, time.Second, func() bool { g.mu.RLock(); defer g.mu.RUnlock(); return g.pendingRequests[testUUID] != nil })
 	g.processCallback(data)
 	g.mu.RLock()
 	defer g.mu.RUnlock()

@@ -54,9 +54,7 @@ func TestAlertRules_ExpectedAlerts(t *testing.T) {
 	expected := []string{
 		"AzathMasterKeyNotLoaded",
 		"AzathUnsealFailureRateHigh",
-		"AzathNotificationFailure",
 		"AzathGateAPIError",
-		"AzathRegistryLoadError",
 		"AzathUnsealRateSpike",
 	}
 

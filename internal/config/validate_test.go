@@ -22,7 +22,7 @@ func validConfig() *config.Config {
 			Source: config.MasterKeySourceFile,
 			Path:   "/etc/azath/master.key",
 		},
-		Registry: config.RegistryConfig{Path: "/etc/azath/registry.json"},
+
 		Notifications: config.NotifyConfig{
 			Telegram: &config.TelegramConfig{BotTokenRef: "op://vault/azath/bot-token", ChatID: "123456789"},
 		},
@@ -62,7 +62,6 @@ func TestValidate_RequiredFields(t *testing.T) {
 		{name: "missing master_key.source", mutate: func(c *config.Config) { c.MasterKey.Source = "" }, wantMsg: "master_key.source must be: file"},
 		{name: "unsupported master_key.source", mutate: func(c *config.Config) { c.MasterKey.Source = "1password" }, wantMsg: "master_key.source must be: file"},
 		{name: "missing master_key.path", mutate: func(c *config.Config) { c.MasterKey.Path = "" }, wantMsg: `master_key.path is required when source is "file"`},
-		{name: "missing registry.path", mutate: func(c *config.Config) { c.Registry.Path = "" }, wantMsg: "registry.path is required"},
 		{name: "missing device.uuid", mutate: func(c *config.Config) { c.Devices[0].UUID = "" }, wantMsg: `devices[0].uuid "" is not a valid UUID`},
 		{name: "device.uuid invalid", mutate: func(c *config.Config) { c.Devices[0].UUID = "not-a-uuid" }, wantMsg: `devices[0].uuid "not-a-uuid" is not a valid UUID`},
 		{name: "missing device.name", mutate: func(c *config.Config) { c.Devices[0].Name = "" }, wantMsg: `devices[0].name is required`},
@@ -388,7 +387,7 @@ func TestValidate_MultiError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected errors, got nil")
 	}
-	for _, s := range []string{"server.listen is required", "server.seal_token_ref is required", "master_key.source must be", "registry.path is required"} {
+	for _, s := range []string{"server.listen is required", "server.seal_token_ref is required", "master_key.source must be"} {
 		if !strings.Contains(err.Error(), s) {
 			t.Errorf("error missing %q\nfull error: %s", s, err.Error())
 		}

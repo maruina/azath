@@ -24,8 +24,16 @@ const deviceID = "550e8400-e29b-41d4-a716-446655440000"
 const passphrase = "disposable-docker-passphrase"
 
 func TestMain(m *testing.M) {
-	if filepath.Base(os.Args[0]) == "mount" {
-		if len(os.Args) > 1 && os.Args[len(os.Args)-1] == passphrase {
+	if filepath.Base(os.Args[0]) == "synoshare" {
+		if len(os.Args) == 4 {
+			f, err := os.OpenFile("/tmp/azath-mounts", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+			if err != nil {
+				os.Exit(3)
+			}
+			_, _ = fmt.Fprintln(f, os.Args[2])
+			_ = f.Close()
+		}
+		if len(os.Args) == 4 && os.Args[1] == "--enc_mount" && os.Args[2] != "fail" && os.Args[3] == passphrase {
 			os.Exit(0)
 		}
 		os.Exit(2)
@@ -38,6 +46,7 @@ type telegram struct {
 	buttons []string
 	updates []map[string]any
 	nextID  int
+	sends   int
 }
 
 func (s *telegram) handle(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +71,7 @@ func (s *telegram) handle(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		s.sends++
 		s.buttons = []string{body.Reply.Keyboard[0][0].Data, body.Reply.Keyboard[0][1].Data}
 		_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
 	case strings.HasSuffix(r.URL.Path, "/getUpdates"):
@@ -104,14 +114,15 @@ func wait(t *testing.T, ready func() bool) {
 
 func command(t *testing.T, input string, args ...string) error {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/usr/local/bin/azath", args...)
 	cmd.Env = append(os.Environ(), "SSL_CERT_FILE=/data/caddy/pki/authorities/local/root.crt")
 	cmd.Stdin = strings.NewReader(input)
 	output, err := cmd.CombinedOutput()
 	if bytes.Contains(output, []byte(passphrase)) || bytes.Contains(output, []byte("docker-bot-token")) {
-		t.Fatal("command output exposed disposable credentials")
+		t.Error("command output exposed disposable credentials")
+		return fmt.Errorf("command output exposed disposable credentials")
 	}
 	return err
 }
@@ -198,8 +209,6 @@ func TestDockerUnlock(t *testing.T) {
 master_key:
   source: file
   path: %s/master.key
-registry:
-  path: %s/registry.json
 devices:
   - name: synology
     uuid: %s
@@ -209,12 +218,13 @@ notifications:
     bot_token_ref: op://test/bot/token
     chat_id: "111"
     approval_ttl: 30s
+    rate_limit: 100ms
 gate:
   type: telegram
   telegram:
     authorized_user_id: "42"
     approval_cache_ttl: 30s
-`, data, data, deviceID)
+`, data, deviceID)
 	configPath := filepath.Join(data, "server.yaml")
 	write(configPath, []byte(config))
 	start := func() func() {
@@ -242,8 +252,11 @@ gate:
 	wait(t, func() bool {
 		return command(t, passphrase, "seal", "--config", client, "--seal-token-file", token, "--out", blob) == nil
 	})
+
+	clientContent := fmt.Sprintf("device:\n  name: synology\n  uuid: %s\nendpoints:\n  - https://localhost:8443\nshares:\n  - {name: homes, sealed_blob: %q}\n  - {name: media, sealed_blob: %q}\n", deviceID, blob, blob)
+	write(client, []byte(clientContent))
 	mount := func() error {
-		return command(t, "", "client", "--config", client, "--sealed-blob", blob, "--timeout", "1s", "--", "/test/mount")
+		return command(t, "", "synology", "--config", client, "--timeout", "8s")
 	}
 	denied := func(label string) {
 		t.Helper()
@@ -251,35 +264,88 @@ gate:
 			t.Fatalf("%s unexpectedly unlocked", label)
 		}
 	}
-	denied("pending")
+	beginMount := func() <-chan error {
+		result := make(chan error, 1)
+		go func() { result <- mount() }()
+		return result
+	}
+	awaitMount := func(result <-chan error, success bool) {
+		t.Helper()
+		select {
+		case err := <-result:
+			if (err == nil) != success {
+				t.Fatalf("mount success = %v, want %v", err == nil, success)
+			}
+		case <-time.After(15 * time.Second):
+			t.Fatal("mount did not complete")
+		}
+	}
+	// Denial uses one share so it cannot leave another waiting request behind.
+	write(client, []byte(strings.Split(clientContent, "  - {name: media")[0]))
+	result := beginMount()
 	state.callback(t, 0, 999, 111)
-	time.Sleep(1500 * time.Millisecond)
-	denied("wrong user")
 	state.callback(t, 0, 42, 999)
 	time.Sleep(1500 * time.Millisecond)
-	denied("wrong chat")
+	select {
+	case <-result:
+		t.Fatal("hostile callback completed mount")
+	default:
+	}
 	state.callback(t, 1, 42, 111)
-	time.Sleep(1500 * time.Millisecond)
-	denied("denial")
+	awaitMount(result, false)
+	time.Sleep(150 * time.Millisecond)
+	write(client, []byte(clientContent))
+	state.mu.Lock()
+	state.buttons = nil
+	state.mu.Unlock()
+	result = beginMount()
 	state.callback(t, 0, 42, 111)
-	wait(t, func() bool { return mount() == nil })
-	t.Log("PASS: TLS seal, pending, wrong user/chat, deny, approve, cached unlock")
+	awaitMount(result, true)
+	if err := mount(); err != nil {
+		t.Fatal("cached unlock failed")
+	}
+
+	state.mu.Lock()
+	sends := state.sends
+	state.mu.Unlock()
+	if sends != 2 {
+		t.Fatalf("expected one denial and one device approval, got %d prompts", sends)
+	}
+	if err := os.WriteFile("/tmp/azath-mounts", nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	write(client, []byte(clientContent+fmt.Sprintf("  - {name: fail, sealed_blob: %q}\n  - {name: backup, sealed_blob: %q}\n", blob, blob)))
+	if mount() == nil {
+		t.Fatal("partial failure succeeded")
+	}
+	mounts, err := os.ReadFile("/tmp/azath-mounts")
+	if err != nil || string(mounts) != "homes\nmedia\nfail\nbackup\n" {
+		t.Fatalf("partial mount order: %q, %v", mounts, err)
+	}
+	write(client, []byte(clientContent))
+	t.Log("PASS: TLS seal, blocking approval, wrong user/chat, deny, approve, cached unlock")
 	original, err := os.ReadFile(blob)
 	if err != nil {
 		t.Fatal(err)
 	}
 	write(blob, []byte("corrupt"))
 	denied("corrupt blob")
+	state.mu.Lock()
+	corruptSends := state.sends
+	state.mu.Unlock()
+	if corruptSends != sends {
+		t.Fatal("corrupt blob prompted")
+	}
 	write(blob, original)
 	stop()
 	state.mu.Lock()
 	state.buttons = nil
 	state.mu.Unlock()
 	stop = start()
-	denied("restart cleared approval")
+	result = beginMount()
 	state.callback(t, 0, 42, 111)
-	wait(t, func() bool { return mount() == nil })
-	t.Log("PASS: corrupt blob rejection and restart with persistent key and registry")
+	awaitMount(result, true)
+	t.Log("PASS: corrupt blob rejection and restart with persistent key and config")
 	stop()
 	write(configPath, []byte(strings.Replace(config, "disabled: false", "disabled: true", 1)))
 	state.mu.Lock()

@@ -17,8 +17,6 @@ master_key:
   source: file
   path: /etc/azath/master.key       # must be identical to LAN master key
 
-registry:
-  path: /etc/azath/registry.json
 
 devices:
   - name: synology

@@ -96,8 +96,6 @@ master_key:
   source: file
   path: /etc/azath/master.key
 
-registry:
-  path: /etc/azath/registry.json
 
 # Bootstrap: start empty, then add the first device below.
 devices: []
@@ -146,8 +144,6 @@ master_key:
   source: file
   path: /etc/azath/master.key
 
-registry:
-  path: /etc/azath/registry.json
 
 # Reuse the LAN-generated UUID verbatim.
 devices:
@@ -232,7 +228,7 @@ runuser -u azath -- test -r /etc/azath/master.key
 runuser -u azath -- test -w /etc/azath
 ```
 
-Keep `/etc/azath/onepassword.env` root-owned with mode `0600`; systemd reads it before starting the service. If restoring an existing registry, make it readable and writable by `azath`.
+Keep `/etc/azath/onepassword.env` root-owned with mode `0600`; systemd reads it before starting the service.
 
 On both servers:
 
@@ -258,7 +254,7 @@ Do not test `op read` with `sudo -u env op read ...`; the unit's `ProtectHome=ye
 
 ## Step 6: Create sealed blobs
 
-Use `azath seal` from a trusted provisioning machine (not the Synology or Talos host):
+Use `azath seal` from a trusted provisioning machine (not the Synology or Talos host). Use the shared `device`, `endpoints`, and `shares` schema from [the Synology runbook](synology.md). The Seal RPC has a 30-second deadline:
 
 ```bash
 azath seal \
@@ -271,13 +267,10 @@ azath seal \
 
 ## Step 7: Verify failover
 
-Stop the LAN server and confirm the client successfully unseals through the VPS:
+On a disposable test share, stop the LAN server and confirm the client successfully unseals through the VPS. Configure endpoints in LAN-first order. Each endpoint has a 10-minute approval deadline by default; `--timeout` accepts a positive duration up to 30 minutes. This command mounts every configured share, so do not run it against mounted production shares:
 
 ```bash
-azath client \
-  --config /etc/azath/client.yaml \
-  --sealed-blob /etc/azath/secrets/homes.key.sealed \
-  -- synoshare --enc_mount homes
+azath synology --config /etc/azath/client.yaml
 ```
 
 ## Rotate the 1Password service-account token
@@ -297,13 +290,13 @@ When the service account token is rotated:
 Client falls back to the VPS endpoint. Telegram approval still required.
 
 ### VPS down, LAN works
-Client tries the VPS endpoint first, hits a timeout, falls back to LAN.
+With LAN-first endpoint order, the client uses LAN without contacting the VPS.
 
 ### Telegram unavailable
 Both LAN and VPS servers fail closed — all Unseal requests return `codes.OK` with random bytes. The client cannot unseal.
 
 ### Wrong master key on one server
-Unseal returns random bytes. The client passes a nonempty response to the mount command; if that command fails, it exits without trying the next endpoint. Retrying the helper starts at the first endpoint again. Correct the key mismatch rather than relying on failover.
+Unseal returns random bytes. A nonempty response ends failover for that share. The client rejects invalid passphrases or reports mount failure, then continues to later shares and returns nonzero. A manual rerun starts at the first endpoint and can attempt already mounted shares again. Correct the key mismatch rather than relying on failover.
 
 ### Disabled device
 Both servers reject Seal with `codes.PermissionDenied` and Unseal with random bytes, without sending Telegram prompts.

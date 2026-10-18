@@ -16,6 +16,8 @@ curl -fsSL https://github.com/maruina/azath/releases/latest/download/install.sh 
 
 The installer needs `curl`, `tar`, `sha256sum`, `mktemp`, and standard POSIX file utilities. It does not require Python, jq, 1Password CLI, GitHub tokens, or a configurable install directory. It installs `/usr/local/bin/azath`.
 
+For Synology, configure all shares in the shared `seal`/`synology` client schema and install the one-invocation boot helper. `azath synology` continues after share failure and returns nonzero on partial failure. See the [Synology runbook](../docs/runbooks/synology.md) before enabling boot automation.
+
 On Debian, a fresh install creates the `azath` service identity, missing `/etc/azath` directory, and managed unit in `/usr/local/lib/systemd/system`. It never enables or starts the service. A changed binary restarts only a service that was active before the replacement. On DSM, the installer creates only missing root-only azath directories and the binary; client configuration, sealed blobs, the helper, and Task Scheduler remain operator-owned.
 
 Checksums detect corruption but share the GitHub release trust boundary with the downloaded archive. No unattended updater is installed.

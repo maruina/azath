@@ -5,7 +5,7 @@
 #
 # A LAN-only host is usually not reachable from the internet, so Let's Encrypt
 # HTTP-01 fails. Default to Caddy's internal CA and trust its root CA on the
-# Synology (DSM Control Panel > Security > Certificate) so azath client can
+# Synology (DSM Control Panel > Security > Certificate) so azath synology can
 # verify TLS. For a real public cert, switch to DNS-01 via Cloudflare and the
 # caddy-dns/cloudflare plugin.
 

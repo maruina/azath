@@ -2,12 +2,10 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
 	"errors"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,44 +18,31 @@ import (
 	"github.com/maruina/azath/internal/gate"
 	"github.com/maruina/azath/internal/keymanager"
 	"github.com/maruina/azath/internal/observability"
-	"github.com/maruina/azath/internal/registry"
 )
 
-type deviceInfo struct {
+type DeviceInfo struct {
 	Name     string
 	UUID     string
 	Disabled bool
 }
 
-// DeviceInfo is exported for use by cmd/azath/serve.go when building the
-// config-derived device lookup table.
-type DeviceInfo = deviceInfo
-
 // KMSServer implements kms.KMSServiceServer. It handles Seal and Unseal RPCs
-// with bearer-token auth, gate approval, and async notifications.
-// Call Close during shutdown to drain in-flight notifications and zero the seal token.
+// with bearer-token auth and gate approval.
+// Call Close after draining RPCs to zero the seal token.
 type KMSServer struct {
 	kms.UnimplementedKMSServiceServer
 
 	km        *keymanager.Manager
-	reg       *registry.Registry
 	metrics   *observability.Metrics
 	logger    *slog.Logger
 	sealToken []byte // zeroed by Close
 
-	gate     Gate
-	notifier Notifier
+	gate gate.Gate
 
-	// devices is the config-derived device lookup table: UUID -> deviceInfo.
+	// devices is the config-derived device lookup table: UUID -> DeviceInfo.
 	// Built at startup from config.devices[]; serves as source of truth for
 	// which devices azath may serve.
-	devices map[string]deviceInfo
-
-	// notifyWg tracks in-flight notification goroutines. shutdownCtx cancels
-	// them on Close; notifyWg.Wait() drains before the seal token is zeroed.
-	notifyWg       sync.WaitGroup
-	shutdownCtx    context.Context
-	shutdownCancel context.CancelFunc
+	devices map[string]DeviceInfo
 }
 
 // Option configures a KMSServer.
@@ -73,20 +58,14 @@ func WithSealToken(token []byte) Option {
 }
 
 // WithGate sets the gate used to approve Unseal requests.
-// A nil gate (the default) approves all requests automatically.
-func WithGate(g Gate) Option {
+// A nil gate (the default) denies all requests.
+func WithGate(g gate.Gate) Option {
 	return func(s *KMSServer) { s.gate = g }
-}
-
-// WithNotifier sets the notifier for async event notifications.
-// A nil notifier (the default) is a no-op.
-func WithNotifier(n Notifier) Option {
-	return func(s *KMSServer) { s.notifier = n }
 }
 
 // WithDevices sets the config-derived device lookup table.
 // The map keys are canonical UUIDs (lowercase, hyphenated).
-func WithDevices(devices map[string]deviceInfo) Option {
+func WithDevices(devices map[string]DeviceInfo) Option {
 	return func(s *KMSServer) { s.devices = devices }
 }
 
@@ -99,25 +78,18 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
-// New creates a KMSServer. Panics if km, reg, or m is nil.
-func New(km *keymanager.Manager, reg *registry.Registry, m *observability.Metrics, opts ...Option) *KMSServer {
+// New creates a KMSServer. Panics if km or m is nil.
+func New(km *keymanager.Manager, m *observability.Metrics, opts ...Option) *KMSServer {
 	if km == nil {
 		panic("server.New: km must not be nil")
-	}
-	if reg == nil {
-		panic("server.New: reg must not be nil")
 	}
 	if m == nil {
 		panic("server.New: m must not be nil")
 	}
-	ctx, cancel := context.WithCancel(context.Background())
 	s := &KMSServer{
-		km:             km,
-		reg:            reg,
-		metrics:        m,
-		logger:         slog.New(slog.DiscardHandler),
-		shutdownCtx:    ctx,
-		shutdownCancel: cancel,
+		km:      km,
+		metrics: m,
+		logger:  slog.New(slog.DiscardHandler),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -125,11 +97,8 @@ func New(km *keymanager.Manager, reg *registry.Registry, m *observability.Metric
 	return s
 }
 
-// Close cancels in-flight notification goroutines, waits for them to finish,
-// then zeros the seal token. Idempotent — safe to call multiple times.
+// Close zeros the seal token after the caller has drained RPCs.
 func (s *KMSServer) Close() {
-	s.shutdownCancel()
-	s.notifyWg.Wait()
 	crypto.Zero(s.sealToken)
 }
 
@@ -171,43 +140,8 @@ func (s *KMSServer) Seal(ctx context.Context, req *kms.Request) (*kms.Response, 
 		return nil, status.Errorf(codes.Internal, "seal: %v", err)
 	}
 
-	// Register the device only after a successful seal. Talos KMS protocol sends
-	// only a UUID; use it as the device name — no richer registration signal is
-	// available from the protocol.
-	_, lookupErr := s.reg.Lookup(nodeUUIDStr)
-	isNew := errors.Is(lookupErr, registry.ErrDeviceNotFound)
-	if isNew {
-		if regErr := s.reg.Register(nodeUUIDStr, nodeUUIDStr); regErr != nil {
-			s.logger.ErrorContext(ctx, "failed to register new device", "node_uuid", nodeUUIDStr[:8], "error", regErr)
-			return nil, status.Errorf(codes.Internal, "registering device %s: %v", nodeUUIDStr, regErr)
-		}
-	} else if lookupErr != nil {
-		s.logger.ErrorContext(ctx, "registry lookup failed", "node_uuid", nodeUUIDStr[:8], "error", lookupErr)
-		return nil, status.Errorf(codes.Internal, "looking up device %s: %v", nodeUUIDStr, lookupErr)
-	}
-
 	s.metrics.SealTotal.Inc()
 	s.metrics.SealDuration.Observe(time.Since(start).Seconds())
-
-	if isNew && s.notifier != nil {
-		// Use shutdownCtx as parent so Close() cancels in-flight notifications.
-		// The 5s timeout bounds per-notification latency.
-		notifCtx, cancel := context.WithTimeout(s.shutdownCtx, 5*time.Second)
-		s.notifyWg.Go(func() {
-			defer cancel()
-			defer func() {
-				if r := recover(); r != nil {
-					s.logger.ErrorContext(notifCtx, "notifier panic", "node_uuid", nodeUUIDStr[:8], "panic", r)
-				}
-			}()
-			if err := s.notifier.NotifySeal(notifCtx, nodeUUIDStr); err != nil {
-				// Use "unknown" as provider label until gate implementations
-				// provide their names via a Name() method.
-				s.logger.ErrorContext(notifCtx, "NotifySeal failed", "node_uuid", nodeUUIDStr[:8], "error", err)
-				s.metrics.NotificationFailures.WithLabelValues("unknown").Inc()
-			}
-		})
-	}
 
 	s.logger.InfoContext(ctx, "seal", "node_uuid", nodeUUIDStr[:8])
 
@@ -220,30 +154,13 @@ func (s *KMSServer) Seal(ctx context.Context, req *kms.Request) (*kms.Response, 
 func (s *KMSServer) Unseal(ctx context.Context, req *kms.Request) (*kms.Response, error) {
 	start := time.Now()
 
-	// randomResp returns random bytes sized to the expected plaintext length.
-	// Size is derived from the sealed blob so the response length is consistent
-	// with a successful decrypt — preventing length-based oracle attacks.
-	randomResp := func() *kms.Response {
-		n := len(req.GetData()) - crypto.MinSealedLen
-		if n <= 0 {
-			n = crypto.KeySize
-		}
-		buf := make([]byte, n)
-		// rand.Read overwrites buf with entropy; on failure (catastrophic: system
-		// entropy unavailable) we log and return the zero buffer.
-		if _, err := rand.Read(buf); err != nil {
-			s.logger.ErrorContext(ctx, "rand.Read failed", "error", err)
-		}
-		return &kms.Response{Data: buf}
-	}
-
 	// fail increments the reason counter, observes duration, and returns random bytes.
 	// All Unseal failure paths must go through fail to uphold the oracle contract.
 	fail := func(reason string) (*kms.Response, error) {
 		s.metrics.UnsealTotal.WithLabelValues(reason).Inc()
 		s.metrics.UnsealDuration.Observe(time.Since(start).Seconds())
 		s.logger.InfoContext(ctx, "unseal", "reason", reason)
-		return randomResp(), nil
+		return randomResponse(req), nil
 	}
 
 	nodeUUID, err := uuid.Parse(req.GetNodeUuid())
@@ -261,14 +178,6 @@ func (s *KMSServer) Unseal(ctx context.Context, req *kms.Request) (*kms.Response
 		return fail("disabled")
 	}
 
-	_, err = s.reg.Lookup(nodeUUIDStr)
-	if err != nil {
-		// ErrDeviceNotFound maps to unknown_uuid. Callers cannot enumerate registered
-		// devices by probing, and cannot distinguish an unregistered device from one
-		// that doesn't exist via the response.
-		return fail("unknown_uuid")
-	}
-
 	// Both ErrNotLoaded and ErrDestroyed map to master_key_not_loaded — all
 	// key-unavailable states are indistinguishable to callers.
 	sealer, err := s.km.Sealer()
@@ -280,25 +189,28 @@ func (s *KMSServer) Unseal(ctx context.Context, req *kms.Request) (*kms.Response
 	}
 	defer sealer.Destroy()
 
-	if s.gate != nil {
-		result, gateErr := s.gate.Check(ctx, gate.Device{Name: dev.Name, UUID: nodeUUIDStr})
-		if gateErr != nil {
-			// Gate infrastructure failure — log the real error so operators can
-			// distinguish a policy denial from an API outage. Fail closed.
-			s.logger.ErrorContext(ctx, "gate check error", "node_uuid", nodeUUIDStr[:8], "error", gateErr)
-			s.metrics.GateAPIErrors.WithLabelValues("telegram").Inc()
-			return fail("gate_denied")
+	validated, err := sealer.Unseal(req.GetData(), []byte(nodeUUIDStr))
+	if err != nil {
+		if errors.Is(err, crypto.ErrShortBlob) || errors.Is(err, crypto.ErrWrongInstance) {
+			return fail("wrong_instance")
 		}
-		// Check for explicit approval; treat all other values (Denied, Pending,
-		// and any unknown future value) as non-approval — fail-closed by design.
-		switch result {
-		case gate.Approved:
-			// proceed
-		case gate.Pending:
-			return fail("gate_pending")
-		default:
-			return fail("gate_denied")
-		}
+		return fail("decrypt_error")
+	}
+	crypto.Zero(validated)
+
+	if s.gate == nil {
+		return fail("gate_denied")
+	}
+	result, gateErr := s.gate.Check(ctx, gate.Device{Name: dev.Name, UUID: nodeUUIDStr})
+	if gateErr != nil {
+		// Gate infrastructure failure — log the real error so operators can
+		// distinguish a policy denial from an API outage. Fail closed.
+		s.logger.ErrorContext(ctx, "gate check error", "node_uuid", nodeUUIDStr[:8], "error", gateErr)
+		s.metrics.GateAPIErrors.WithLabelValues("telegram").Inc()
+		return fail("gate_denied")
+	}
+	if result != gate.Approved {
+		return fail("gate_denied")
 	}
 
 	plaintext, err := sealer.Unseal(req.GetData(), []byte(nodeUUIDStr))

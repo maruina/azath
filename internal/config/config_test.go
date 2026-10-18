@@ -19,8 +19,6 @@ server:
 master_key:
   source: file
   path: /etc/azath/master.key
-registry:
-  path: /etc/azath/registry.json
 devices:
   - name: talos-node
     uuid: 550e8400-e29b-41d4-a716-446655440000
@@ -45,8 +43,6 @@ server:
 master_key:
   source: file
   path: /etc/azath/master.key
-registry:
-  path: /etc/azath/registry.json
 notifications:
   telegram:
     bot_token_ref: "op://vault/azath/bot-token"
@@ -64,12 +60,6 @@ gate:
   telegram:
     authorized_user_id: "987654321"
     approval_cache_ttl: 2m
-client:
-  device:
-    name: synology
-    uuid: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
-  endpoints:
-    - "https://lan.azath.internal"
 `
 
 func TestLoad_ValidMinimal(t *testing.T) {
@@ -83,9 +73,6 @@ func TestLoad_ValidMinimal(t *testing.T) {
 	}
 	if cfg.MasterKey.Source != config.MasterKeySourceFile {
 		t.Errorf("master_key.source = %q, want %q", cfg.MasterKey.Source, config.MasterKeySourceFile)
-	}
-	if cfg.Registry.Path != "/etc/azath/registry.json" {
-		t.Errorf("registry.path = %q, want %q", cfg.Registry.Path, "/etc/azath/registry.json")
 	}
 	if len(cfg.Devices) != 1 {
 		t.Fatalf("len(devices) = %d, want 1", len(cfg.Devices))
@@ -112,12 +99,6 @@ func TestLoad_ValidFull(t *testing.T) {
 	}
 	if cfg.Devices[1].Disabled != true {
 		t.Fatal("disabled device field not loaded")
-	}
-	if cfg.Client == nil {
-		t.Fatal("client is nil")
-	}
-	if cfg.Client.Device.Name != "synology" {
-		t.Errorf("client.device.name = %q, want synology", cfg.Client.Device.Name)
 	}
 }
 
@@ -172,8 +153,6 @@ server:
 master_key:
   source: file
   path: /etc/azath/master.key
-registry:
-  path: /etc/azath/registry.json
 devices:
   - name: talos-node
     uuid: 550e8400-e29b-41d4-a716-446655440000

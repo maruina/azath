@@ -88,7 +88,7 @@ To recover: ensure Telegram is reachable before booting Talos nodes.
 
 ### Sealed blobs
 
-Unlike the Synology flow, Talos does not use `azath seal` or `azath client`. Talos calls `Seal` internally when provisioning the encryption key with `kms` key slot. The sealed blob is stored in the Talos metadata partition, not in a file.
+Unlike the Synology flow, Talos does not use `azath seal` or `azath synology`. Talos calls `Seal` internally when provisioning the encryption key with `kms` key slot. The sealed blob is stored in the Talos metadata partition, not in a file.
 
 ## Re-provisioning after master key rotation
 

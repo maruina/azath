@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
 	"log/slog"
 	"runtime/debug"
 	"strings"
@@ -12,8 +11,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	"github.com/maruina/azath/internal/crypto"
 )
 
 // panicRecoveryInterceptor is the outermost interceptor. It catches panics in
@@ -34,9 +31,8 @@ func panicRecoveryInterceptor(logger *slog.Logger) grpc.UnaryServerInterceptor {
 					// Oracle contract: Unseal must always return codes.OK + random bytes.
 					// A panic (e.g. buggy Gate implementation) must not produce a
 					// distinguishable response code.
-					buf := make([]byte, crypto.KeySize)
-					_, _ = rand.Read(buf)
-					resp = &kms.Response{Data: buf}
+					request, _ := req.(*kms.Request)
+					resp = randomResponse(request)
 					err = nil
 				} else {
 					err = status.Errorf(codes.Internal, "internal server error")

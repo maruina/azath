@@ -27,7 +27,7 @@ It seals and unseals key material using Telegram approval and config-driven devi
 
 	root.AddCommand(
 		newServeCmd(),
-		newClientCmd(),
+		newSynologyCmd(),
 		newSealCmd(),
 		newConfigCmd(),
 	)

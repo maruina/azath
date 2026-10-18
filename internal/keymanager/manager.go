@@ -15,14 +15,10 @@ package keymanager
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"sync"
-
-	"golang.org/x/crypto/hkdf"
 
 	"github.com/maruina/azath/internal/crypto"
 	"github.com/maruina/azath/internal/observability"
@@ -33,7 +29,7 @@ var (
 	// ErrAlreadyLoaded is returned when Load is called on a Manager that already
 	// holds a key.
 	ErrAlreadyLoaded = errors.New("master key already loaded")
-	// ErrNotLoaded is returned when Sealer or DeriveKey is called before Load.
+	// ErrNotLoaded is returned when Sealer is called before Load.
 	ErrNotLoaded = errors.New("master key not loaded")
 	// ErrDestroyed is returned when any method is called after Destroy.
 	ErrDestroyed = errors.New("key manager has been destroyed")
@@ -174,37 +170,6 @@ func (m *Manager) Sealer() (*crypto.Sealer, error) {
 	}
 	defer crypto.ZeroOnReturn(&kc)
 	return crypto.NewSealer(kc)
-}
-
-// DeriveKey derives length bytes from the master key using HKDF-SHA256 with the
-// given info string as the context. The same key + info + length always produces
-// the same output (deterministic). The caller is responsible for zeroing the
-// returned bytes after use.
-//
-// Returns ErrNotLoaded if Load has not been called, ErrDestroyed if Destroy has
-// been called.
-func (m *Manager) DeriveKey(info string, length int) ([]byte, error) {
-	if length <= 0 {
-		return nil, fmt.Errorf("DeriveKey: length must be positive, got %d", length)
-	}
-	kc, err := m.keyCopy()
-	if err != nil {
-		return nil, err
-	}
-	// HKDF-SHA256(IKM=master key, salt=nil, info=info). nil salt is intentional:
-	// per RFC 5869 §3.1 it defaults to a zero-filled HMAC key of hash length.
-	defer crypto.ZeroOnReturn(&kc)
-	r := hkdf.New(sha256.New, kc, nil, []byte(info))
-	derived := make([]byte, length)
-	if _, err := io.ReadFull(r, derived); err != nil {
-		m.logger.Error("hkdf derivation failed",
-			slog.String("info", info),
-			slog.Int("length", length),
-			slog.Any("error", err))
-		crypto.Zero(derived)
-		return nil, fmt.Errorf("hkdf read: %w", err)
-	}
-	return derived, nil
 }
 
 // Destroy zeros the master key held by this Manager. After Destroy, all method

@@ -3,7 +3,7 @@
 ## Scope
 
 This policy covers the azath server (`azath serve`), the client CLIs
-(`azath client`, `azath seal`), and the Telegram approval gate. Deployment
+(`azath synology`, `azath seal`), and the Telegram approval gate. Deployment
 topology, reverse-proxy configuration, and host hardening are out of scope.
 
 ## Reporting a vulnerability

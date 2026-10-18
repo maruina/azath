@@ -1,6 +1,6 @@
 # Install azath on Debian 13
 
-azath ships a root-run installer for Debian 13 servers on `amd64` and `arm64`. It installs the binary and a managed systemd unit, but never enables or starts the service. Configuration, Caddy, and the LAN+VPS topology are covered in [Deploy LAN + VPS](runbooks/deploy-lan-vps.md).
+azath ships a root-run installer for Debian 13 servers on `amd64` and `arm64`. It installs the binary and a managed systemd unit, but never enables or starts the service. Start with one LAN server whose storage, networking, and DNS do not depend on shares it unlocks. Configuration, Caddy, and optional LAN+VPS redundancy are covered in [Deploy LAN + VPS](runbooks/deploy-lan-vps.md).
 
 ## Prerequisites
 
@@ -59,5 +59,5 @@ Checksums detect archive corruption but share the GitHub release trust boundary 
 ## Next steps
 
 - [Deploy LAN + VPS servers](runbooks/deploy-lan-vps.md) — server config, Caddy TLS, systemd startup, failover verification.
-- [Talos Linux disk encryption](runbooks/talos.md) — registering Talos nodes and configuring the KMS key slot.
+- [Talos Linux disk encryption](runbooks/talos.md) — configuring Talos device identities and configuring the KMS key slot.
 - The managed unit lives at [`deploy/systemd/azath.service`](../deploy/systemd/azath.service); the production runbook explains the `EnvironmentFile=/etc/azath/onepassword.env` requirement.
