@@ -11,10 +11,6 @@ import (
 	"github.com/google/uuid"
 )
 
-var validSources = map[MasterKeySource]struct{}{
-	MasterKeySourceFile: {},
-}
-
 var validLogLevels = map[string]struct{}{
 	"debug": {},
 	"info":  {},
@@ -102,7 +98,7 @@ func validateLoopbackAddr(field, addr string, errs *[]error) {
 
 func validateMasterKey(cfg *Config, errs *[]error) {
 	m := &cfg.MasterKey
-	if _, ok := validSources[m.Source]; !ok {
+	if m.Source != MasterKeySourceFile {
 		*errs = append(*errs, errors.New("master_key.source must be: file"))
 		return // remaining checks depend on a valid source
 	}

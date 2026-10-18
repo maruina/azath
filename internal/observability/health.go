@@ -42,10 +42,6 @@ func (hc *HealthChecker) Register(name string, fn CheckFunc) {
 	hc.checks[name] = fn
 }
 
-type checkResult struct {
-	Status string
-}
-
 type healthResponse struct {
 	Status string `json:"status"`
 }
@@ -91,7 +87,7 @@ func (hc *HealthChecker) ReadyzHandler() http.HandlerFunc {
 			wg.Add(1)
 			go func(n string, f CheckFunc) {
 				defer wg.Done()
-				if cr := runCheck(r.Context(), hc.log, n, f); cr.Status == "fail" {
+				if !runCheck(r.Context(), hc.log, n, f) {
 					mu.Lock()
 					overall = "fail"
 					mu.Unlock()
@@ -112,22 +108,21 @@ func (hc *HealthChecker) ReadyzHandler() http.HandlerFunc {
 }
 
 // runCheck executes fn and recovers from panics, turning them into failures.
-// The full error is logged internally; only an opaque "check failed" is
-// returned to callers to avoid leaking internal state externally.
-func runCheck(ctx context.Context, logger *slog.Logger, name string, fn CheckFunc) (cr *checkResult) {
-	cr = &checkResult{Status: "ok"}
+// Errors are logged internally; the return value reports only success or failure.
+func runCheck(ctx context.Context, logger *slog.Logger, name string, fn CheckFunc) (ok bool) {
+	ok = true
 	defer func() {
 		// Named return allows the recovered defer to set the return value.
 		if r := recover(); r != nil {
 			logger.Error("health check panicked", "check", name, "panic", fmt.Sprintf("%v", r))
-			cr.Status = "fail"
+			ok = false
 		}
 	}()
 	if err := fn(ctx); err != nil {
 		logger.Error("health check failed", "check", name, "error", err)
-		cr.Status = "fail"
+		ok = false
 	}
-	return cr
+	return ok
 }
 
 // NewHTTPServer creates an *http.Server that serves /healthz, /readyz, and /metrics.
