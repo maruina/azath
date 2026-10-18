@@ -31,7 +31,6 @@ azath resolves secrets from 1Password via `op://` references. The systemd unit l
    op --version
    ```
 2. In 1Password, create a service account scoped to the vault holding your azath items. Grant it read access to every item referenced by a `*_ref` field, for example:
-   - `op://<vault>/azath/seal-token`
    - `op://<vault>/azath-lan-bot/token`
    - `op://<vault>/azath-vps-bot/token`
 3. On each server, write the service account token to `/etc/azath/onepassword.env`:
@@ -90,27 +89,22 @@ server:
   metrics_listen: "127.0.0.1:9090"
   log_level: info
   log_format: json
-  seal_token_ref: "op://<vault>/azath/seal-token"
 
 master_key:
   source: file
   path: /etc/azath/master.key
 
-
 # Bootstrap: start empty, then add the first device below.
 devices: []
-
-notifications:
-  telegram:
-    bot_token_ref: "op://<vault>/azath-lan-bot/token"
-    chat_id: "123456789"
-    rate_limit: 5m
-    approval_ttl: 10m
 
 gate:
   type: telegram
   telegram:
+    bot_token_ref: "op://<vault>/azath-lan-bot/token"
+    chat_id: "123456789"
     authorized_user_id: "987654321"
+    rate_limit: 5m
+    approval_ttl: 10m
     approval_cache_ttl: 2m
 ```
 
@@ -138,12 +132,10 @@ server:
   metrics_listen: "127.0.0.1:9090"
   log_level: info
   log_format: json
-  seal_token_ref: "op://<vault>/azath/seal-token"
 
 master_key:
   source: file
   path: /etc/azath/master.key
-
 
 # Reuse the LAN-generated UUID verbatim.
 devices:
@@ -151,17 +143,14 @@ devices:
     uuid: <lan-generated-uuid>
     disabled: false
 
-notifications:
-  telegram:
-    bot_token_ref: "op://<vault>/azath-vps-bot/token"  # different bot token
-    chat_id: "123456789"
-    rate_limit: 5m
-    approval_ttl: 10m
-
 gate:
   type: telegram
   telegram:
+    bot_token_ref: "op://<vault>/azath-vps-bot/token"  # different bot token
+    chat_id: "123456789"
     authorized_user_id: "987654321"
+    rate_limit: 5m
+    approval_ttl: 10m
     approval_cache_ttl: 2m
 ```
 
@@ -260,7 +249,6 @@ Use `azath seal` from a trusted provisioning machine (not the Synology or Talos 
 azath seal \
   --config /etc/azath/client.yaml \
   --endpoint https://azath-lan.example.internal:443 \
-  --seal-token-file /etc/azath/seal-token \
   --out /etc/azath/secrets/homes.key.sealed \
   --prompt
 ```

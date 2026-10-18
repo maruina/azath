@@ -24,7 +24,6 @@ func TestServeReturnsMetricsBindErrorAfterCleanup(t *testing.T) {
 	defer func() { _ = occupied.Close() }()
 	grpcAddr := "127.0.0.1:" + freePort(t)
 	configPath := writeDevConfig(t, keyPath, grpcAddr, occupied.Addr().String())
-	t.Setenv("AZATH_SEAL_TOKEN", "disposable-seal-token")
 	t.Setenv("AZATH_BOT_TOKEN", "disposable-bot-token")
 	telegram := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"ok":true,"result":[]}`))

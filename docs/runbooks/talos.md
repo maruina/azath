@@ -14,7 +14,7 @@ Talos uses a [KMS key slot](https://www.talos.dev/v1.10/talos-guides/configurati
 
 ## Step 1: Register Talos nodes
 
-Add a device entry for each Talos node in both LAN and VPS server configs:
+Find each Talos node's hardware UUID (e.g. from `dmidecode -s system-uuid` or Talos installation output). Add a device entry for each Talos node in both LAN and VPS server configs:
 
 ```yaml
 devices:
@@ -26,25 +26,27 @@ devices:
     disabled: false
 ```
 
-Use `azath config new-device` to generate UUIDs:
-
-```bash
-azath config new-device --name talos-worker-01 --config /etc/azath/server.yaml
-```
-
-Deploy the updated config to both servers and restart azath.
+Deploy the updated config to both servers.
 
 ## Step 2: Configure Talos KMS
 
-Edit the Talos machine config to use the azath KMS endpoint. Example for `talosctl edit mc`:
+Configure Talos machine config to use the azath KMS endpoint for disk encryption (supported on `state` and `ephemeral` partitions):
 
 ```yaml
 machine:
-  encryption:
-    - keyProvider:
-        - kms:
-            endpoint: https://azath-vps.example.com:443
-            node_uuid: "660e8400-e29b-41d4-a716-446655440001"
+  systemDiskEncryption:
+    state:
+      provider: luks2
+      keys:
+        - slot: 0
+          kms:
+            endpoint: https://azath-lan.example.internal:443
+    ephemeral:
+      provider: luks2
+      keys:
+        - slot: 0
+          kms:
+            endpoint: https://azath-lan.example.internal:443
 ```
 
 ### Failover
@@ -70,11 +72,9 @@ At boot, Talos calls azath `Unseal` to get the disk encryption key. The first un
 
 ## Talos-specific considerations
 
-### Mutual TLS
+### Authentication
 
-azath authenticates Talos using a bearer token (the `seal_token_ref` in server config). Talos does not support custom bearer tokens for KMS. If Talos does not send an `authorization` metadata header with the KMS request, the `Seal` RPC will fail with `unauthenticated`.
-
-**Verified**: this applies to the `Seal` path only. `Unseal` does not require a bearer token and succeeds without one.
+azath authorizes Talos requests via the server's configured `devices[]` list. When Talos calls `Seal` during initial partition encryption or `Unseal` during boot, it transmits its node UUID. If the node UUID is configured and enabled in `server.yaml`, azath serves the request. `Unseal` additionally requires human approval via Telegram.
 
 ### Boot timing
 
@@ -96,4 +96,4 @@ If the azath master key changes, Talos nodes cannot unseal their disks because t
 
 1. Deploy the new master key to both LAN and VPS servers.
 2. Re-provision each Talos node's disk encryption (back up data first).
-3. Approve the `Seal` calls in Telegram as Talos re-encrypts.
+3. Re-encrypt the Talos partitions (`Seal` executes automatically for the configured node UUID).

@@ -280,6 +280,9 @@ func (g *TelegramGate) waitForApproval(ctx context.Context, device Device) (Deci
 	pending.waiters--
 	if pending.waiters == 0 {
 		g.finishPendingLocked(pending, Denied)
+		if ctx.Err() != nil {
+			delete(g.lastPrompt, uuid)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return Denied, fmt.Errorf("waiting for approval: %w", err)
@@ -571,11 +574,8 @@ func (g *TelegramGate) processCallback(data callbackData) {
 	defer g.mu.Unlock()
 
 	uuid := data.DeviceUUID
-
-	// Remove pending request.
-	pending, exists := g.pendingRequests[uuid]
-	if !exists || pending.createdAt.UnixNano() != data.Timestamp || time.Since(pending.createdAt) > g.cfg.approvalTTL {
-		// Stale or duplicate callback — ignore.
+	created := time.Unix(0, data.Timestamp)
+	if created.After(time.Now()) || time.Since(created) > g.cfg.approvalTTL {
 		return
 	}
 	if g.closed {
@@ -584,11 +584,19 @@ func (g *TelegramGate) processCallback(data callbackData) {
 	if data.Action != "approve" && data.Action != "deny" {
 		return
 	}
-	decision := Denied
-	if data.Action == "approve" {
-		decision = Approved
+
+	pending, exists := g.pendingRequests[uuid]
+	if exists {
+		if pending.createdAt.UnixNano() != data.Timestamp {
+			// Callback does not match current pending request.
+			return
+		}
+		decision := Denied
+		if data.Action == "approve" {
+			decision = Approved
+		}
+		g.finishPendingLocked(pending, decision)
 	}
-	g.finishPendingLocked(pending, decision)
 
 	if data.Action == "approve" {
 		// Add to approval cache if caching is enabled.
@@ -597,13 +605,21 @@ func (g *TelegramGate) processCallback(data callbackData) {
 				expiresAt: time.Now().Add(g.cfg.approvalCacheTTL),
 			}
 		}
+		deviceName := uuid[:8]
+		if exists {
+			deviceName = pending.device.Name
+		}
 		g.logger.InfoContext(context.Background(), "gate: unseal approved",
-			"device_uuid", uuid, "device_name", pending.device.Name)
+			"device_uuid", uuid, "device_name", deviceName)
 		return
 	}
 
+	deviceName := uuid[:8]
+	if exists {
+		deviceName = pending.device.Name
+	}
 	g.logger.InfoContext(context.Background(), "gate: unseal denied",
-		"device_uuid", uuid, "device_name", pending.device.Name)
+		"device_uuid", uuid, "device_name", deviceName)
 }
 
 // signCallbackData creates an HMAC signature for callback data.

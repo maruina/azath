@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/maruina/azath/internal/config"
@@ -20,22 +21,58 @@ func newConfigCmd() *cobra.Command {
 }
 
 func newConfigValidateCmd() *cobra.Command {
-	return &cobra.Command{
+	var jsonOutput bool
+	cmd := &cobra.Command{
 		Use:   "validate <path>",
-		Short: "Validate a config file",
+		Short: "Validate a server or client config file",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(args[0])
-			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
+			path := args[0]
+			printValid := func(cfgType string) error {
+				if jsonOutput {
+					if err := json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+						"valid": true,
+						"type":  cfgType,
+					}); err != nil {
+						return fmt.Errorf("writing json output: %w", err)
+					}
+					return nil
+				}
+				if _, err := fmt.Fprintln(cmd.OutOrStdout(), "config is valid"); err != nil {
+					return fmt.Errorf("writing output: %w", err)
+				}
+				return nil
 			}
-			if _, err := config.Validate(cfg); err != nil {
-				return fmt.Errorf("config validation failed: %w", err)
+
+			cfg, err := config.Load(path)
+			if err == nil {
+				if _, valErr := config.Validate(cfg); valErr == nil {
+					return printValid("server")
+				} else {
+					if jsonOutput {
+						_ = json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+							"valid": false,
+							"error": valErr.Error(),
+						})
+					}
+					return fmt.Errorf("config validation failed: %w", valErr)
+				}
 			}
-			if _, err := fmt.Fprintln(cmd.OutOrStdout(), "config is valid"); err != nil {
-				return fmt.Errorf("writing output: %w", err)
+
+			// If server config loading failed, check if this is a valid client config.
+			if _, clientErr := config.LoadClientConfig(path); clientErr == nil {
+				return printValid("client")
 			}
-			return nil
+
+			if jsonOutput {
+				_ = json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+					"valid": false,
+					"error": err.Error(),
+				})
+			}
+			return fmt.Errorf("loading config: %w", err)
 		},
 	}
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output result in JSON format")
+	return cmd
 }

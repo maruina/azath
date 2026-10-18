@@ -14,9 +14,6 @@ import (
 	"github.com/maruina/azath/internal/testutil"
 )
 
-// e2eSealToken is the bearer token the e2e server requires for Seal.
-const e2eSealToken = "e2e-seal-token"
-
 // e2eDeviceUUID is the device the e2e server is configured to serve.
 const e2eDeviceUUID = "550e8400-e29b-41d4-a716-446655440000"
 
@@ -43,7 +40,6 @@ func startE2EServer(t *testing.T, g gate.Gate, deviceUUID string) string {
 	}
 
 	kmsSrv := server.New(mgr, m,
-		server.WithSealToken([]byte(e2eSealToken)),
 		server.WithGate(g),
 		server.WithDevices(map[string]server.DeviceInfo{
 			deviceUUID: {Name: "synology", UUID: deviceUUID},
@@ -73,7 +69,7 @@ func writeE2EClientConfig(t *testing.T, addr string) string {
 
 // sealViaStdin seals passphrase through the real server by running runSeal
 // with a stdin pipe, mirroring how azath seal reads a secret non-interactively.
-func sealViaStdin(t *testing.T, cfgPath, tokenPath, blobPath, passphrase string) {
+func sealViaStdin(t *testing.T, cfgPath, blobPath, passphrase string) {
 	t.Helper()
 	oldStdin := os.Stdin
 	r, w, pipeErr := os.Pipe()
@@ -86,7 +82,7 @@ func sealViaStdin(t *testing.T, cfgPath, tokenPath, blobPath, passphrase string)
 		t.Fatalf("writing stdin: %v", writeErr)
 	}
 	_ = w.Close()
-	if sealErr := runSeal(t.Context(), cfgPath, nil, tokenPath, blobPath, false, true); sealErr != nil {
+	if sealErr := runSeal(t.Context(), cfgPath, nil, blobPath, false, true); sealErr != nil {
 		t.Fatalf("runSeal: %v", sealErr)
 	}
 }

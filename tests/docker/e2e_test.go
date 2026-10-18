@@ -228,7 +228,7 @@ gate:
 	configPath := filepath.Join(data, "server.yaml")
 	write(configPath, []byte(config))
 	start := func() func() {
-		stop := process(t, 1000, []string{"AZATH_SEAL_TOKEN=docker-seal-token", "AZATH_TOKEN=docker-bot-token"}, "/usr/local/bin/azath", "serve", "--dev", "--config", configPath, "--telegram-api-base", api.URL)
+		stop := process(t, 1000, []string{"AZATH_TOKEN=docker-bot-token"}, "/usr/local/bin/azath", "serve", "--dev", "--config", configPath, "--telegram-api-base", api.URL)
 		wait(t, func() bool {
 			resp, err := (&http.Client{Timeout: time.Second}).Get("http://127.0.0.1:9090/readyz")
 			if err != nil {
@@ -246,11 +246,9 @@ gate:
 	wait(t, func() bool { _, err := os.Stat("/data/caddy/pki/authorities/local/root.crt"); return err == nil })
 	client := filepath.Join(dir, "client.yaml")
 	write(client, []byte(fmt.Sprintf("device:\n  name: synology\n  uuid: %s\nendpoints:\n  - https://localhost:8443\n", deviceID)))
-	token := filepath.Join(dir, "token")
-	write(token, []byte("docker-seal-token"))
 	blob := filepath.Join(dir, "homes.sealed")
 	wait(t, func() bool {
-		return command(t, passphrase, "seal", "--config", client, "--seal-token-file", token, "--out", blob) == nil
+		return command(t, passphrase, "seal", "--config", client, "--out", blob) == nil
 	})
 
 	clientContent := fmt.Sprintf("device:\n  name: synology\n  uuid: %s\nendpoints:\n  - https://localhost:8443\nshares:\n  - {name: homes, sealed_blob: %q}\n  - {name: media, sealed_blob: %q}\n", deviceID, blob, blob)

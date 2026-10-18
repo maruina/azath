@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ func newSynologyCmdWithMount(mount mountShare) *cobra.Command {
 	var configPath string
 	var insecureDev bool
 	var timeout time.Duration
+	var jsonOutput bool
 	cmd := &cobra.Command{
 		Use: "synology --config <path>", Short: "Unlock configured Synology encrypted shares sequentially",
 		Args: cobra.NoArgs,
@@ -40,6 +42,11 @@ func newSynologyCmdWithMount(mount mountShare) *cobra.Command {
 				return errors.New("shares must contain at least one share")
 			}
 			failed := false
+			type shareResultJSON struct {
+				Name   string `json:"name"`
+				Status string `json:"status"`
+			}
+			var jsonResults []shareResultJSON
 			for _, share := range cfg.Shares {
 				if err := cmd.Context().Err(); err != nil {
 					return fmt.Errorf("synology canceled: %w", err)
@@ -78,8 +85,24 @@ func newSynologyCmdWithMount(mount mountShare) *cobra.Command {
 				if result != "mounted" {
 					failed = true
 				}
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", share.Name, result); err != nil {
-					return fmt.Errorf("writing share result: %w", err)
+				if jsonOutput {
+					jsonResults = append(jsonResults, shareResultJSON{Name: share.Name, Status: result})
+				} else {
+					if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", share.Name, result); err != nil {
+						return fmt.Errorf("writing share result: %w", err)
+					}
+				}
+			}
+			if jsonOutput {
+				out := struct {
+					Success bool              `json:"success"`
+					Shares  []shareResultJSON `json:"shares"`
+				}{
+					Success: !failed,
+					Shares:  jsonResults,
+				}
+				if err := json.NewEncoder(cmd.OutOrStdout()).Encode(out); err != nil {
+					return fmt.Errorf("writing json output: %w", err)
 				}
 			}
 			if failed {
@@ -92,6 +115,7 @@ func newSynologyCmdWithMount(mount mountShare) *cobra.Command {
 	_ = cmd.MarkFlagRequired("config")
 	cmd.Flags().DurationVar(&timeout, "timeout", 10*time.Minute, "per-endpoint approval deadline (maximum 30m)")
 	cmd.Flags().BoolVar(&insecureDev, "insecure-dev", false, "use plaintext h2c for local tests")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output results in JSON format")
 	return cmd
 }
 

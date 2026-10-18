@@ -73,3 +73,34 @@ func TestSynologyRejectsArgumentsAndCancellation(t *testing.T) {
 		t.Fatal("cancellation succeeded")
 	}
 }
+
+func TestSynologyCommandJSONOutput(t *testing.T) {
+	t.Parallel()
+	addr, closeServer := startFakeUnsealer(t, []byte("test-passphrase"), false)
+	defer closeServer()
+	blob := writeSealedBlob(t, bytes.Repeat([]byte{1}, 40))
+	cfg := writeClientConfigWithEndpoints(t, e2eDeviceUUID, addr)
+	f, err := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0) // #nosec G304
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fmt.Fprintf(f, "shares:\n  - {name: homes, sealed_blob: %q}\n", blob)
+	_ = f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	cmd := newSynologyCmdWithMount(func(_ context.Context, name string, secret []byte) error {
+		return nil
+	})
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{"--config", cfg, "--insecure-dev", "--json"})
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if !strings.Contains(output.String(), `"success":true`) || !strings.Contains(output.String(), `"name":"homes"`) {
+		t.Errorf("unexpected json output: %s", output.String())
+	}
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -12,6 +13,7 @@ import (
 
 func newConfigDisableDeviceCmd() *cobra.Command {
 	var name, cfgPath string
+	var jsonOutput bool
 
 	cmd := &cobra.Command{
 		Use:   "disable-device",
@@ -20,12 +22,13 @@ func newConfigDisableDeviceCmd() *cobra.Command {
 Comments and formatting in the config file are preserved.
 Idempotent — safe to run on an already-disabled device.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return toggleDeviceDisabled(cmd, cfgPath, name, true)
+			return toggleDeviceDisabled(cmd, cfgPath, name, true, jsonOutput)
 		},
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "device name (required)")
 	cmd.Flags().StringVar(&cfgPath, "config", "", "path to config file (required)")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output result in JSON format")
 	_ = cmd.MarkFlagRequired("name")
 	_ = cmd.MarkFlagRequired("config")
 
@@ -34,6 +37,7 @@ Idempotent — safe to run on an already-disabled device.`,
 
 func newConfigEnableDeviceCmd() *cobra.Command {
 	var name, cfgPath string
+	var jsonOutput bool
 
 	cmd := &cobra.Command{
 		Use:   "enable-device",
@@ -43,12 +47,13 @@ the disabled field if it was the only entry.
 Comments and formatting in the config file are preserved.
 Idempotent — safe to run on an already-enabled device.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return toggleDeviceDisabled(cmd, cfgPath, name, false)
+			return toggleDeviceDisabled(cmd, cfgPath, name, false, jsonOutput)
 		},
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "device name (required)")
 	cmd.Flags().StringVar(&cfgPath, "config", "", "path to config file (required)")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output result in JSON format")
 	_ = cmd.MarkFlagRequired("name")
 	_ = cmd.MarkFlagRequired("config")
 
@@ -58,7 +63,7 @@ Idempotent — safe to run on an already-enabled device.`,
 // toggleDeviceDisabled reads cfgPath, finds the device by name, sets its
 // disabled field to disabled (true or false), validates the result, and writes
 // atomically. It uses the yaml.v3 node API to preserve comments and formatting.
-func toggleDeviceDisabled(cmd *cobra.Command, cfgPath string, name string, disabled bool) error {
+func toggleDeviceDisabled(cmd *cobra.Command, cfgPath string, name string, disabled bool, jsonOutput bool) error {
 	rawBytes, err := readConfig(cfgPath)
 	if err != nil {
 		return err
@@ -80,6 +85,16 @@ func toggleDeviceDisabled(cmd *cobra.Command, cfgPath string, name string, disab
 
 	if err = fsutil.Write(cfgPath, newBytes); err != nil {
 		return fmt.Errorf("writing config: %w", err)
+	}
+
+	if jsonOutput {
+		if jsonErr := json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+			"name":     name,
+			"disabled": disabled,
+		}); jsonErr != nil {
+			return fmt.Errorf("writing json output: %w", jsonErr)
+		}
+		return nil
 	}
 
 	action := "enabled"
