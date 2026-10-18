@@ -1,5 +1,4 @@
 # Deploy LAN + VPS
-
 This runbook walks through deploying two azath servers — one on your local LAN (e.g. an LXC container) and one on a VPS (e.g. a cloud VM) — plus configuring Caddy for TLS termination.
 
 ## Single LAN server
@@ -10,7 +9,6 @@ The LAN host's storage, networking, and DNS must not depend on an encrypted NAS 
 The prerequisites below describe the redundant two-server deployment.
 
 ## Prerequisites
-
 - Two Linux machines with `systemd`, one on LAN and one on VPS.
 - A domain or subdomain pointing to your VPS public IP.
 - Two Telegram bot tokens (one for LAN, one for VPS) created via [@BotFather](https://t.me/botfather).
@@ -20,8 +18,31 @@ The prerequisites below describe the redundant two-server deployment.
 
 Install azath on both servers with Step 1 before creating files under `/etc/azath`. Run the setup commands as root.
 
-### 1Password service account
+## Step 1: Install azath
+Install on each Debian 13 server. See [install-debian.md](../install-debian.md) for prerequisites, what the installer creates, and rollback. Run the public release installer as root:
 
+```sh
+curl -fsSL https://github.com/maruina/azath/releases/latest/download/install.sh | sh
+```
+
+Pin a binary release by applying `AZATH_VERSION` to `sh`:
+
+```sh
+curl -fsSL https://github.com/maruina/azath/releases/latest/download/install.sh | AZATH_VERSION=v0.2.0 sh
+```
+
+A fresh install creates the account, missing `/etc/azath` directory, and vendor unit, but never enables or starts the service. A same-identity rerun does not restart it. A different `--version` identity restarts only a service that was active before replacement. If the installer cannot determine service state, it stops before replacing the binary. If a restart fails, inspect `systemctl status azath.service --no-pager` and roll back:
+
+```sh
+printf 'Previous release tag: '
+read -r AZATH_VERSION
+curl -fsSL https://github.com/maruina/azath/releases/latest/download/install.sh | AZATH_VERSION="$AZATH_VERSION" sh
+```
+
+Verify the binary with `azath --version`.
+
+## Step 2: Configure servers
+### 1Password service account
 azath resolves secrets from 1Password via `op://` references. The systemd unit loads the token from `EnvironmentFile=/etc/azath/onepassword.env` (see `deploy/systemd/azath.service`).
 
 1. Install the `op` CLI on both servers:
@@ -42,7 +63,6 @@ azath resolves secrets from 1Password via `op://` references. The systemd unit l
    The unit refuses to start if this file is missing.
 
 ### Generate master key
-
 ```bash
 umask 077
 dd if=/dev/urandom of=/etc/azath/master.key bs=32 count=1
@@ -52,34 +72,9 @@ chmod 0600 /etc/azath/master.key
 
 Generate the key once and copy it to the other server. It must be identical on LAN and VPS. Set ownership to `azath:azath` and mode `0600` on both copies. Do not regenerate a key after creating sealed blobs; keep an offline recovery copy.
 
-## Step 1: Install azath
-
-Install on each Debian 13 server. See [install-debian.md](../install-debian.md) for prerequisites, what the installer creates, and rollback. Run the public release installer as root:
-
-```sh
-curl -fsSL https://github.com/maruina/azath/releases/latest/download/install.sh | sh
-```
-
-Pin a binary release by applying `AZATH_VERSION` to `sh`:
-
-```sh
-curl -fsSL https://github.com/maruina/azath/releases/latest/download/install.sh | AZATH_VERSION=v0.2.0 sh
-```
-
-A fresh install creates the account, missing `/etc/azath` directory, and vendor unit, but never enables or starts the service. A same-identity rerun does not restart it. A changed binary restarts only a service that was active before replacement. If the installer cannot determine service state, it stops before replacing the binary. If a restart fails, inspect `systemctl status azath.service --no-pager` and roll back:
-
-```sh
-curl -fsSL https://github.com/maruina/azath/releases/latest/download/install.sh | AZATH_VERSION=v<previous> sh
-```
-
-Verify the binary with `azath --version`.
-
-## Step 2: Configure servers
-
 Start with an empty `devices: []` placeholder on the LAN server, then bootstrap the first device with `azath config new-device`. Reuse the generated UUID verbatim on the VPS so the device lists match.
 
 ### LAN server config
-
 File: `/etc/azath/server.yaml`
 
 ```yaml
@@ -112,7 +107,6 @@ Add the first device and record the printed UUID:
 
 ```bash
 azath config new-device --name synology --config /etc/azath/server.yaml
-# Example output: a1b2c3d4-e5f6-7890-abcd-ef1234567890
 ```
 
 Validate:
@@ -122,7 +116,6 @@ azath config validate /etc/azath/server.yaml
 ```
 
 ### VPS server config
-
 File: `/etc/azath/server.yaml`
 
 ```yaml
@@ -160,30 +153,23 @@ Validate:
 azath config validate /etc/azath/server.yaml
 ```
 
-### Diff the device lists
-
-```bash
-azath config diff --lan /etc/azath/server-lan.yaml --vps /etc/azath/server-vps.yaml
-```
-
-The only expected difference is `server.name` and the bot token ref.
+### Compare the device lists
+Compare the `devices` entries in the two server configs. Names, UUIDs, and disabled states must match. The server names and Telegram bot token references differ between servers.
 
 ## Step 3: Configure Caddy
-
 ### LAN Caddyfile
-
 File: `/etc/caddy/Caddyfile`
 
 ```
 azath-lan.example.internal {
+    tls internal
     reverse_proxy h2c://127.0.0.1:7800
 }
 ```
 
-For LAN, you can use a private CA or self-signed certificate. The client must trust the CA.
+This matches the internal-CA setup in `deploy/caddy/Caddyfile.lan.example`. Install and configure Caddy separately; the azath installer does not install it. Clients must trust its root CA. The azath CLI uses system certificate verification; importing a certificate in DSM's UI has not been verified to update the trust store used by the Go client.
 
 ### VPS Caddyfile
-
 File: `/etc/caddy/Caddyfile`
 
 ```
@@ -195,7 +181,6 @@ azath-vps.example.com {
 Caddy automatically provisions a Let's Encrypt certificate for the public domain.
 
 ## Step 4: Configure systemd
-
 See `deploy/systemd/azath.service` for a production systemd unit. The service must:
 
 - Run as a non-root user (e.g. `azath`).
@@ -242,7 +227,6 @@ journalctl -u azath
 Do not test `op read` with `sudo -u env op read ...`; the unit's `ProtectHome=yes` makes that form fragile.
 
 ## Step 6: Create sealed blobs
-
 Use `azath seal` from a trusted provisioning machine (not the Synology or Talos host). Use the shared `device`, `endpoints`, and `shares` schema from [the Synology runbook](synology.md). The Seal RPC has a 30-second deadline:
 
 ```bash
@@ -254,26 +238,26 @@ azath seal \
 ```
 
 ## Step 7: Verify failover
-
 On a disposable test share, stop the LAN server and confirm the client successfully unseals through the VPS. Configure endpoints in LAN-first order. Each endpoint has a 10-minute approval deadline by default; `--timeout` accepts a positive duration up to 30 minutes. This command mounts every configured share, so do not run it against mounted production shares:
 
 ```bash
 azath synology --config /etc/azath/client.yaml
 ```
 
-## Rotate the 1Password service-account token
+## Apply device changes
+The server reads devices only at startup. After adding, enabling, or disabling a device, deploy matching device lists to every server, restore config ownership to `azath:azath` with mode `0600`, and restart each azath process. Validate the config before restarting. For a stolen device, apply the disablement to every server; a server with the old config can still approve it.
 
+## Rotate the 1Password service-account token
 When the service account token is rotated:
 
 1. Update `/etc/azath/onepassword.env` on both servers with the new token.
-2. Restart azath:
+2. Restart one server at a time and verify its `/readyz` response before restarting the other. `/readyz` checks the loaded key, not live Telegram connectivity:
    ```bash
    sudo systemctl restart azath
    ```
 3. Verify `/readyz` returns ready on both servers.
 
 ## Failure modes
-
 ### LAN down, VPS works
 Client falls back to the VPS endpoint. Telegram approval still required.
 
@@ -281,7 +265,7 @@ Client falls back to the VPS endpoint. Telegram approval still required.
 With LAN-first endpoint order, the client uses LAN without contacting the VPS.
 
 ### Telegram unavailable
-Both LAN and VPS servers fail closed — all Unseal requests return `codes.OK` with random bytes. The client cannot unseal.
+Without a valid approval-cache entry, both LAN and VPS servers fail closed: Unseal requests return `codes.OK` with random bytes. An unexpired cache entry can still permit unsealing for its device. Restore Telegram access before requests need fresh approval.
 
 ### Wrong master key on one server
 Unseal returns random bytes. A nonempty response ends failover for that share. The client rejects invalid passphrases or reports mount failure, then continues to later shares and returns nonzero. A manual rerun starts at the first endpoint and can attempt already mounted shares again. Correct the key mismatch rather than relying on failover.

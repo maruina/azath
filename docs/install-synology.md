@@ -1,21 +1,19 @@
 # Install azath on Synology DSM 7
-
 azath ships a root-run installer for Synology DSM 7 clients on `amd64` and `arm64`. On DSM the installer installs only the client binary and root-only config directories — no service account, no systemd integration. The full unseal flow (sealed blobs, client config, boot task) is covered in [Synology unseal flow](runbooks/synology.md).
 
 ## Compatibility and validation
 The client integration targets encrypted shared folders through `synoshare --enc_mount`, not DSM encrypted volumes. The DS420+ running DSM 7 is the initial hardware validation target and uses the `amd64` binary. Live DS420+ validation is pending. Other models need a supported CPU architecture and compatible DSM commands; higher hardware specifications alone do not establish compatibility.
 
-The [Docker suite](../tests/docker/README.md) checks the software flow but does not certify a NAS model. Before enabling boot automation, test a disposable shared folder, manual recovery, and a cold boot on the target device.
+The [Docker suite](testing.md) checks the software flow but does not certify a NAS model. Before enabling boot automation, test a disposable shared folder, manual recovery, and a cold boot on the target device.
 
 ## Prerequisites
-
 - DSM 7, `amd64` or `arm64`.
 - Root. The installer refuses to run otherwise.
-- `curl`, `tar`, `sha256sum`, `mktemp`, `awk`, `chown`, `cp`, `grep`, `gzip`, `mkdir`, `mv`, `rm`, `tr`, `wc`.
+- `curl`, `tar`, `sha256sum`, `mktemp`, `awk`, `chmod`, `chown`, `cp`, `grep`, `gzip`, `mkdir`, `mv`, `rm`, `tr`, `wc`.
+- `id` and `uname` for root and architecture checks.
 - The repository and release assets must be public.
 
 ## Install
-
 Run the release-distributed installer as root:
 
 ```sh
@@ -28,37 +26,31 @@ To pin a binary release, apply `AZATH_VERSION` to `sh`, not `curl`:
 curl -fsSL https://github.com/maruina/azath/releases/latest/download/install.sh | AZATH_VERSION=v0.2.0 sh
 ```
 
-## What the installer creates on DSM
-
-- `/etc/azath` and `/etc/azath/secrets` (mode `0700`, owned `root:root`) if missing.
-- The binary at `/usr/local/bin/azath`.
-
-Configure `device`, `endpoints`, and all `shares` in one client config, shared by `azath seal` and `azath synology`. The boot helper calls `azath synology` once. It unlocks shares sequentially, continues after a share failure, and returns nonzero for partial failure. One device approval can cover all shares while the approval cache window remains valid; cache TTL zero requires a fresh approval for each request.
-
-The installer does not create a service account or any systemd or Task Scheduler integration. Reruns preserve existing config, sealed blobs, the unseal helper, and Task Scheduler entries.
+For directory permissions and preserved files, see [Installer behavior](reference/installer.md#synology-dsm).
 
 ## Verify
-
 ```sh
 azath --version
 ```
 
 ## Rollback
-
 Reinstall a pinned previous binary with the same installer:
 
 ```sh
-curl -fsSL https://github.com/maruina/azath/releases/latest/download/install.sh | AZATH_VERSION=v<previous> sh
+printf 'Previous release tag: '
+read -r AZATH_VERSION
+curl -fsSL https://github.com/maruina/azath/releases/latest/download/install.sh | AZATH_VERSION="$AZATH_VERSION" sh
 ```
 
 If the latest installer itself is broken, pin both installer and binary to a compatible release:
 
 ```sh
-curl -fsSL https://github.com/maruina/azath/releases/download/v<previous>/install.sh | AZATH_VERSION=v<previous> sh
+printf 'Compatible release tag: '
+read -r AZATH_VERSION
+curl -fsSL "https://github.com/maruina/azath/releases/download/$AZATH_VERSION/install.sh" | AZATH_VERSION="$AZATH_VERSION" sh
 ```
 
 Checksums detect archive corruption but share the GitHub release trust boundary with the download. No unattended updater is installed.
 
 ## Next steps
-
 - [Synology unseal flow](runbooks/synology.md) — creating sealed blobs, client config, the boot task, and the `synoshare --enc_mount` security trade-off.
