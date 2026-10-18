@@ -1,13 +1,13 @@
 # MVP architecture
 
-azath is a homelab KMS that protects Talos Linux disk encryption keys and Synology encrypted volume passphrases behind a Telegram approval gate. The MVP deploys two servers (LAN + VPS) sharing a master key and device configuration, with Caddy terminating TLS in front of loopback-only gRPC listeners.
+azath is a homelab KMS that protects Talos Linux disk encryption keys and Synology encrypted shared-folder passphrases behind a Telegram approval gate. The MVP can use one LAN server or a redundant LAN + VPS pair sharing a master key and device configuration. Caddy terminates TLS in front of loopback-only gRPC listeners. A server must not depend on the encrypted shared folders it unlocks for its storage, networking, or DNS.
 
 ## Threat model
 
 **What azath protects:**
 - Stolen Talos or Synology hosts cannot auto-unseal without Telegram approval.
-- A single-server azath outage does not block unseals — the client fails over to the second server.
-- Disabling a device in config and deploying to both servers stops sealing and unsealing without modifying the registry.
+- With multiple endpoints configured, `azath client` can try a second server after a connection or RPC failure. The second server still requires its own Telegram approval or approval-cache hit.
+- Disabling a device in config and deploying to every server stops sealing and unsealing without modifying the registry.
 
 **What azath does not protect against:**
 - Compromise of both a sealed blob and the azath master key: anyone with the sealed blob and the master key can decrypt directly.
@@ -15,6 +15,7 @@ azath is a homelab KMS that protects Talos Linux disk encryption keys and Synolo
 - A stolen Telegram session: if an attacker can approve Telegram callbacks, they can unseal any device (within the approval cache TTL).
 
 ## Shared-state requirements
+These requirements apply when deploying more than one server. Approval caches remain independent and in-memory on each server.
 
 - **Master key**: LAN and VPS must use the same raw 32-byte master key file. Both servers derive the same AES-256-GCM keys, HMAC keys, and instance tags from it. A client can seal through one server and unseal through the other.
 - **Device config**: LAN and VPS must use the same `devices[]` list in their server configs. Adding or disabling a device requires updating both configs.
@@ -33,8 +34,9 @@ azath is a homelab KMS that protects Talos Linux disk encryption keys and Synolo
 ## Client model
 
 - `azath seal` is a bootstrap CLI used once per device to create sealed blobs. It requires a seal token and reads the plaintext interactively (`--prompt`) or from stdin.
-- `azath client` is a one-shot CLI used at every boot to unseal one encrypted volume. It appends the plaintext passphrase as the final argument to a user-provided command.
-- Clients try endpoints in order and fall back on failure.
+- `azath client` is a one-shot CLI used at every boot to unseal one secret for a Synology shared folder. It appends the plaintext passphrase as the final argument to a user-provided command.
+- `azath client` tries endpoints in order after an RPC failure or empty response. A nonempty response is passed to the command, and command failure ends the invocation without trying another endpoint. Pending, denied, wrong-key, and decrypt-error responses contain random bytes, so a reachable failing server can prevent use of a later endpoint.
+- `azath seal` uses the first selected endpoint; it does not retry across endpoints.
 
 ## Ports
 

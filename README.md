@@ -1,12 +1,12 @@
 # azath
 
-Homelab KMS for [Talos Linux](https://www.talos.dev/) disk encryption and [Synology](https://www.synology.com/) encrypted volume unsealing. azath seals secrets with AES-256-GCM and gates every successful unseal behind a Telegram approval, so a stolen client cannot auto-unseal without you.
+Homelab KMS for [Talos Linux](https://www.talos.dev/) disk encryption and [Synology](https://www.synology.com/) encrypted shared-folder unsealing. azath seals secrets with AES-256-GCM and gates every successful unseal behind a Telegram approval, so a stolen client cannot auto-unseal without you.
 
 > *In the Malazan world, Azath Houses are silent wardens — ancient structures that seal away forces too dangerous to leave unbound.*
 
 ## What is azath
 
-azath is a small gRPC KMS that implements the [Talos KMS protocol](https://www.talos.dev/v1.10/talos-guides/configuration/disk-encryption/#kms-key-slot) and serves encrypted passphrases to Synology clients. It runs as two servers (LAN + VPS) sharing a master key and device list, with Caddy terminating TLS in front of loopback-only gRPC listeners. Every unseal requires a Telegram approval (or a short-lived approval cache hit); disabling a device in config and redeploying stops all sealing and unsealing for that device.
+azath is a small gRPC KMS that implements the [Talos KMS protocol](https://www.talos.dev/v1.10/talos-guides/configuration/disk-encryption/#kms-key-slot) and serves encrypted passphrases to Synology clients. It can run as one LAN server or as a redundant LAN + VPS pair sharing a master key and device list. Caddy terminates TLS in front of loopback-only gRPC listeners. Every unseal requires a Telegram approval (or a short-lived approval cache hit); disabling a device in config and redeploying stops all sealing and unsealing for that device.
 
 | Command | Purpose | Status |
 |---------|---------|--------|
@@ -43,7 +43,11 @@ make vet     # go vet only
 make clean   # remove bin/
 ```
 
-Run `make test` before marking work complete. Code conventions, invariants, and validation commands are in [AGENTS.md](AGENTS.md).
+Run `make test` before marking work complete. It runs the Go tests, not the Docker suite. For changes to the Telegram gate, client/server wiring, endpoints, or Synology boot helper, also run the [Docker end-to-end suite](tests/docker/README.md). The `Docker E2E` job in [CI](.github/workflows/ci.yml) runs it on pull requests to `main` and pushes to `main`.
+
+The Docker suite uses real azath binaries and Caddy/TLS with simulated Telegram and mount operations. It does not establish DSM hardware compatibility. See the [Synology guide](docs/install-synology.md) for the validation target and remaining live checks.
+
+Code conventions, invariants, and validation commands are in [AGENTS.md](AGENTS.md).
 
 ## Releasing
 
