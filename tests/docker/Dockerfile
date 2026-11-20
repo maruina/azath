@@ -6,7 +6,7 @@ COPY . .
 RUN go vet -tags=docker_e2e ./tests/docker
 RUN CGO_ENABLED=0 go build -o /out/azath ./cmd/azath && CGO_ENABLED=0 go test -c -tags=docker_e2e -o /out/docker-e2e ./tests/docker
 
-FROM caddy:2.10.2-alpine
+FROM caddy:2.11.9-alpine
 COPY --from=build /out/azath /usr/local/bin/azath
 COPY --from=build /out/docker-e2e /test/docker-e2e
 RUN mkdir -p /usr/syno/sbin && ln -s /test/docker-e2e /usr/syno/sbin/synoshare
